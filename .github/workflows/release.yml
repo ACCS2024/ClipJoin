@@ -60,7 +60,8 @@ jobs:
               Sort-Object -Descending |
               Select-Object -First 1
           } else {
-            $latest = [System.Version]'0.0.0'
+            # 仓库没有任何 tag 时，第一个 release 直接从 v1.0.0 开始
+            $latest = [System.Version]'0.9.9'
           }
 
           Write-Host "Latest tag: v$latest"
