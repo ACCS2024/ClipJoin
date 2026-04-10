@@ -263,6 +263,42 @@ namespace ClipJoin
 
             _lastOutputPath = outputPath;
 
+            // ── Pre-flight: check for output file conflicts ─────────────────────────
+            var resolution = Services.ConflictResolution.Overwrite;
+            var conflicts = Services.VideoMergeService.ScanConflicts(effectiveAnalysis, outputPath);
+            if (conflicts.Count > 0)
+            {
+                var settings = AppSettings.Load();
+                if (settings.DefaultConflictResolution != Services.ConflictResolution.Ask)
+                {
+                    // Use remembered preference — no dialog needed
+                    resolution = settings.DefaultConflictResolution;
+                    var label = resolution switch
+                    {
+                        Services.ConflictResolution.Skip => "跳过",
+                        Services.ConflictResolution.Rename => "自动重命名",
+                        _ => "覆盖"
+                    };
+                    AppendLog($"[{DateTime.Now:HH:mm:ss}] ⚠ 发现 {conflicts.Count} 个已存在的输出文件，将按记住的设置执行：{label}");
+                }
+                else
+                {
+                    var dlg = new ConflictDialog(conflicts) { Owner = this };
+                    dlg.ShowDialog();
+                    if (!dlg.Confirmed)
+                        return;
+
+                    resolution = dlg.SelectedResolution;
+
+                    if (dlg.RememberChoice)
+                    {
+                        settings.DefaultConflictResolution = resolution;
+                        settings.Save();
+                    }
+                }
+            }
+            // ───────────────────────────────────────────────────────────────────────
+
             // Prepare UI
             _cts = new CancellationTokenSource();
             SetUIBusy(true);
@@ -281,7 +317,7 @@ namespace ClipJoin
             try
             {
                 var progress = new Progress<MergeProgress>(UpdateProgress);
-                await _mergeService.MergeAsync(effectiveAnalysis, outputPath, progress, _cts.Token);
+                await _mergeService.MergeAsync(effectiveAnalysis, outputPath, progress, resolution, _cts.Token);
 
                 // Clear sorted analysis after successful merge
                 _sortedAnalysis = null;

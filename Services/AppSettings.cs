@@ -11,6 +11,12 @@ public class AppSettings
     public string ApiKey { get; set; } = "";
     public string Model { get; set; } = "deepseek-v3";
 
+    /// <summary>
+    /// Remembered conflict-resolution choice. <see cref="ConflictResolution.Ask"/> means always prompt.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter))]
+    public ConflictResolution DefaultConflictResolution { get; set; } = ConflictResolution.Ask;
+
     private static readonly string SettingsDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "ClipJoin");

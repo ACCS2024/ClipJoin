@@ -27,6 +27,26 @@ public class MergeProgress
 }
 
 /// <summary>
+/// Determines how to handle output files that already exist.
+/// </summary>
+public enum ConflictResolution
+{
+    /// <summary>Ask the user before starting.</summary>
+    Ask,
+    /// <summary>Skip groups whose output file already exists.</summary>
+    Skip,
+    /// <summary>Overwrite existing output files.</summary>
+    Overwrite,
+    /// <summary>Auto-rename the new output file (e.g. name_2.mp4).</summary>
+    Rename
+}
+
+/// <summary>
+/// Describes a single output file conflict detected in pre-flight.
+/// </summary>
+public record ConflictItem(string GroupName, string OutputFile);
+
+/// <summary>
 /// Indicates whether the input folder contains video files directly or in subdirectories.
 /// </summary>
 public enum FolderMode
@@ -178,12 +198,43 @@ public class VideoMergeService
     }
 
     /// <summary>
+    /// Scans expected output paths and returns any that already exist (pre-flight check).
+    /// </summary>
+    public static List<ConflictItem> ScanConflicts(FolderAnalysis analysis, string outputPath)
+    {
+        var result = new List<ConflictItem>();
+        foreach (var group in analysis.Groups)
+        {
+            var outputFile = Path.Combine(outputPath, group.Name + ".mp4");
+            if (File.Exists(outputFile))
+                result.Add(new ConflictItem(group.Name, outputFile));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Returns a non-conflicting path by appending _2, _3, … until free.
+    /// </summary>
+    private static string GetNonConflictingPath(string path)
+    {
+        var dir = Path.GetDirectoryName(path)!;
+        var nameNoExt = Path.GetFileNameWithoutExtension(path);
+        var ext = Path.GetExtension(path);
+        int n = 2;
+        string candidate;
+        do { candidate = Path.Combine(dir, $"{nameNoExt}_{n++}{ext}"); }
+        while (File.Exists(candidate));
+        return candidate;
+    }
+
+    /// <summary>
     /// Executes the merge operation for all groups in the analysis.
     /// </summary>
     public async Task MergeAsync(
         FolderAnalysis analysis,
         string outputPath,
         IProgress<MergeProgress> progress,
+        ConflictResolution conflictResolution = ConflictResolution.Overwrite,
         CancellationToken cancellationToken = default)
     {
         var ffmpeg = FFmpegHelper.FindFFmpeg()
@@ -249,6 +300,50 @@ public class VideoMergeService
             });
 
             var outputFile = Path.Combine(outputPath, group.Name + ".mp4");
+
+            // ── Conflict resolution ────────────────────────────────────────
+            if (File.Exists(outputFile))
+            {
+                switch (conflictResolution)
+                {
+                    case ConflictResolution.Skip:
+                        sessionLog.AppendLine($"[任务 {i + 1}/{totalGroups}] {group.Name} — 跳过（文件已存在）");
+                        progress.Report(new MergeProgress
+                        {
+                            StatusMessage = $"跳过: {group.Name}",
+                            CurrentTask = $"文件已存在，跳过: {group.Name}.mp4",
+                            CompletedFolders = i + 1,
+                            TotalFolders = totalGroups,
+                            FolderPercent = 100,
+                            TotalPercent = (double)(i + 1) / totalGroups * 100,
+                            Elapsed = stopwatch.Elapsed,
+                            EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, i + 1, totalGroups),
+                            LogMessage = $"[{DateTime.Now:HH:mm:ss}] ⏭ 跳过已存在: {group.Name}.mp4"
+                        });
+                        continue;
+
+                    case ConflictResolution.Rename:
+                        var renamedPath = GetNonConflictingPath(outputFile);
+                        progress.Report(new MergeProgress
+                        {
+                            StatusMessage = $"重命名输出: {group.Name}",
+                            CurrentTask = $"输出已存在，将写入: {Path.GetFileName(renamedPath)}",
+                            CompletedFolders = i,
+                            TotalFolders = totalGroups,
+                            FolderPercent = 0,
+                            TotalPercent = (double)i / totalGroups * 100,
+                            Elapsed = stopwatch.Elapsed,
+                            EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, i, totalGroups),
+                            LogMessage = $"[{DateTime.Now:HH:mm:ss}] 📄 输出重命名: {group.Name}.mp4 → {Path.GetFileName(renamedPath)}"
+                        });
+                        sessionLog.AppendLine($"  输出重命名: {group.Name}.mp4 → {Path.GetFileName(renamedPath)}");
+                        outputFile = renamedPath;
+                        break;
+
+                    // ConflictResolution.Overwrite: fall through, -y flag handles overwrite
+                }
+            }
+            // ──────────────────────────────────────────────────────────────
 
             if (group.VideoFiles.Count == 1)
             {
@@ -460,6 +555,10 @@ public class VideoMergeService
                     await proc.WaitForExitAsync(CancellationToken.None);
                 }
                 catch (InvalidOperationException) { }
+
+                // Delete the partial/corrupt output file left by the killed FFmpeg process
+                try { if (File.Exists(outputFile)) File.Delete(outputFile); }
+                catch { /* best-effort cleanup */ }
 
                 throw;
             }
