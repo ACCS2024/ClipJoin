@@ -23,7 +23,6 @@ namespace ClipJoin
         private readonly Dictionary<string, ObservableCollection<FileItem>> _groupItems = new();
 
         private Point _dragStartPoint;
-        private bool _isDragging;
 
         /// <summary>
         /// After confirmation, contains the updated analysis with reordered files.
@@ -212,9 +211,7 @@ namespace ClipJoin
 
             if (FileListBox.SelectedItem is FileItem item)
             {
-                _isDragging = true;
                 DragDrop.DoDragDrop(FileListBox, item, DragDropEffects.Move);
-                _isDragging = false;
             }
         }
 
