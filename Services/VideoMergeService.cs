@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -193,8 +194,19 @@ public class VideoMergeService
 
         var totalGroups = analysis.Groups.Count;
         var stopwatch = Stopwatch.StartNew();
+        var sessionLog = new StringBuilder();
 
         Directory.CreateDirectory(outputPath);
+
+        // Session log header
+        var sessionStart = DateTime.Now;
+        sessionLog.AppendLine($"ClipJoin 合并日志");
+        sessionLog.AppendLine($"时间: {sessionStart:yyyy-MM-dd HH:mm:ss}");
+        sessionLog.AppendLine($"输出目录: {outputPath}");
+        sessionLog.AppendLine($"模式: {analysis.Mode}");
+        sessionLog.AppendLine($"任务数: {totalGroups}");
+        sessionLog.AppendLine($"FFmpeg: {ffmpeg}");
+        sessionLog.AppendLine(new string('═', 60));
 
         for (int i = 0; i < totalGroups; i++)
         {
@@ -202,6 +214,26 @@ public class VideoMergeService
 
             var group = analysis.Groups[i];
             var basePercent = (double)i / totalGroups * 100;
+
+            // --- Detailed file order log ---
+            sessionLog.AppendLine();
+            sessionLog.AppendLine($"[任务 {i + 1}/{totalGroups}] {group.Name}");
+            sessionLog.AppendLine($"  源目录: {group.SourceDir}");
+            sessionLog.AppendLine($"  文件数: {group.VideoFiles.Count}");
+            sessionLog.AppendLine($"  排序后文件列表 (自然排序):");
+            for (int fi = 0; fi < group.VideoFiles.Count; fi++)
+            {
+                sessionLog.AppendLine($"    {fi + 1,4}. {Path.GetFileName(group.VideoFiles[fi])}");
+            }
+
+            // Report file order to UI log
+            var orderLogLines = new StringBuilder();
+            orderLogLines.AppendLine($"[{DateTime.Now:HH:mm:ss}] ─── 任务 {i + 1}/{totalGroups}: {group.Name} ───");
+            orderLogLines.Append($"[{DateTime.Now:HH:mm:ss}] 文件顺序 ({group.VideoFiles.Count} 个):");
+            for (int fi = 0; fi < group.VideoFiles.Count; fi++)
+            {
+                orderLogLines.Append($"\n[{DateTime.Now:HH:mm:ss}]   {fi + 1,3}. {Path.GetFileName(group.VideoFiles[fi])}");
+            }
 
             progress.Report(new MergeProgress
             {
@@ -213,13 +245,16 @@ public class VideoMergeService
                 TotalPercent = basePercent,
                 Elapsed = stopwatch.Elapsed,
                 EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, i, totalGroups),
-                LogMessage = $"[{DateTime.Now:HH:mm:ss}] 开始合并: {group.Name} ({group.VideoFiles.Count} 个视频文件)"
+                LogMessage = orderLogLines.ToString()
             });
 
             var outputFile = Path.Combine(outputPath, group.Name + ".mp4");
 
             if (group.VideoFiles.Count == 1)
             {
+                sessionLog.AppendLine($"  操作: 单文件复制");
+                sessionLog.AppendLine($"  输出: {outputFile}");
+
                 progress.Report(new MergeProgress
                 {
                     StatusMessage = $"正在复制: {group.Name}",
@@ -234,11 +269,12 @@ public class VideoMergeService
                 });
 
                 File.Copy(group.VideoFiles[0], outputFile, true);
+                sessionLog.AppendLine($"  结果: 复制成功");
             }
             else if (group.VideoFiles.Count > 1)
             {
                 await ConcatVideosAsync(ffmpeg, group, outputFile, i, totalGroups,
-                    stopwatch, progress, cancellationToken);
+                    stopwatch, progress, sessionLog, cancellationToken);
             }
 
             // Copy images from source to output
@@ -256,9 +292,18 @@ public class VideoMergeService
                 EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, i + 1, totalGroups),
                 LogMessage = $"[{DateTime.Now:HH:mm:ss}] ✅ 完成合并: {group.Name} → {Path.GetFileName(outputFile)}"
             });
+
+            sessionLog.AppendLine($"  完成时间: {DateTime.Now:HH:mm:ss}");
         }
 
         stopwatch.Stop();
+
+        sessionLog.AppendLine();
+        sessionLog.AppendLine(new string('═', 60));
+        sessionLog.AppendLine($"全部完成，总耗时: {FormatTimeSpan(stopwatch.Elapsed)}");
+
+        // Save session log file to output directory
+        SaveSessionLog(outputPath, sessionStart, sessionLog);
 
         progress.Report(new MergeProgress
         {
@@ -270,8 +315,26 @@ public class VideoMergeService
             TotalPercent = 100,
             Elapsed = stopwatch.Elapsed,
             EstimatedRemaining = TimeSpan.Zero,
-            LogMessage = $"[{DateTime.Now:HH:mm:ss}] 🎉 全部完成！共处理 {totalGroups} 个任务，总耗时: {FormatTimeSpan(stopwatch.Elapsed)}"
+            LogMessage = $"[{DateTime.Now:HH:mm:ss}] 🎉 全部完成！共处理 {totalGroups} 个任务，总耗时: {FormatTimeSpan(stopwatch.Elapsed)}\n" +
+                         $"[{DateTime.Now:HH:mm:ss}] 📄 日志已保存到输出目录"
         });
+    }
+
+    /// <summary>
+    /// Saves a detailed session log to the output directory for post-mortem debugging.
+    /// </summary>
+    private static void SaveSessionLog(string outputPath, DateTime sessionStart, StringBuilder sessionLog)
+    {
+        try
+        {
+            var logFileName = $"ClipJoin_log_{sessionStart:yyyyMMdd_HHmmss}.txt";
+            var logFilePath = Path.Combine(outputPath, logFileName);
+            File.WriteAllText(logFilePath, sessionLog.ToString(), Encoding.UTF8);
+        }
+        catch
+        {
+            // Logging failure should never block the main workflow
+        }
     }
 
     private async Task ConcatVideosAsync(
@@ -282,6 +345,7 @@ public class VideoMergeService
         int totalGroups,
         Stopwatch stopwatch,
         IProgress<MergeProgress> progress,
+        StringBuilder sessionLog,
         CancellationToken cancellationToken)
     {
         var listFile = Path.Combine(Path.GetTempPath(), $"clipjoin_{Guid.NewGuid():N}.txt");
@@ -289,8 +353,17 @@ public class VideoMergeService
         try
         {
             // Write FFmpeg concat file list
-            var lines = group.VideoFiles.Select(f => $"file '{f.Replace("'", "'\\''")}'");
+            var lines = group.VideoFiles.Select(f => $"file '{f.Replace("'", "'\\''")}'").ToList();
             await File.WriteAllLinesAsync(listFile, lines, cancellationToken);
+
+            // Log concat list content to session log
+            sessionLog.AppendLine($"  操作: FFmpeg concat 合并");
+            sessionLog.AppendLine($"  concat 列表文件: {listFile}");
+            sessionLog.AppendLine($"  concat 列表内容:");
+            foreach (var line in lines)
+            {
+                sessionLog.AppendLine($"    {line}");
+            }
 
             // Compute total duration for progress tracking
             double totalDuration = 0;
@@ -298,6 +371,13 @@ public class VideoMergeService
             {
                 totalDuration += await FFmpegHelper.GetVideoDurationAsync(video, cancellationToken);
             }
+
+            var ffmpegArgs = $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c copy -movflags +faststart -y \"{outputFile}\"";
+
+            // Log the full FFmpeg command
+            sessionLog.AppendLine($"  输出文件: {outputFile}");
+            sessionLog.AppendLine($"  总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}");
+            sessionLog.AppendLine($"  FFmpeg 命令: {ffmpegPath} {ffmpegArgs}");
 
             progress.Report(new MergeProgress
             {
@@ -316,7 +396,7 @@ public class VideoMergeService
             var psi = new ProcessStartInfo
             {
                 FileName = ffmpegPath,
-                Arguments = $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c copy -movflags +faststart -y \"{outputFile}\"",
+                Arguments = ffmpegArgs,
                 CreateNoWindow = true,
                 UseShellExecute = false,
                 RedirectStandardOutput = false,
@@ -386,9 +466,12 @@ public class VideoMergeService
 
             if (proc.ExitCode != 0)
             {
+                sessionLog.AppendLine($"  结果: 失败 (退出代码: {proc.ExitCode})");
                 throw new InvalidOperationException(
                     $"FFmpeg 合并失败 (退出代码: {proc.ExitCode})，请确认视频文件格式一致");
             }
+
+            sessionLog.AppendLine($"  结果: 成功");
         }
         finally
         {
@@ -492,6 +575,8 @@ public class VideoMergeService
 /// <summary>
 /// Natural string comparer that sorts numeric portions of strings numerically.
 /// For example: "1.mp4", "2.mp4", "10.mp4" instead of "1.mp4", "10.mp4", "2.mp4".
+/// Handles: leading zeros, very long numbers, mixed alpha-numeric segments,
+/// and Unicode file names (Chinese, etc.).
 /// </summary>
 public class NaturalStringComparer : IComparer<string>
 {
@@ -499,36 +584,57 @@ public class NaturalStringComparer : IComparer<string>
 
     public int Compare(string? x, string? y)
     {
-        if (x == null && y == null) return 0;
+        if (ReferenceEquals(x, y)) return 0;
         if (x == null) return -1;
         if (y == null) return 1;
 
         int ix = 0, iy = 0;
         while (ix < x.Length && iy < y.Length)
         {
-            if (char.IsDigit(x[ix]) && char.IsDigit(y[iy]))
+            var cx = x[ix];
+            var cy = y[iy];
+
+            if (char.IsDigit(cx) && char.IsDigit(cy))
             {
-                // Extract and compare numeric portions
-                long nx = 0;
-                while (ix < x.Length && char.IsDigit(x[ix]))
-                    nx = nx * 10 + (x[ix++] - '0');
+                // Skip leading zeros, but count them for tie-breaking
+                int zx = 0, zy = 0;
+                while (ix < x.Length && x[ix] == '0') { zx++; ix++; }
+                while (iy < y.Length && y[iy] == '0') { zy++; iy++; }
 
-                long ny = 0;
-                while (iy < y.Length && char.IsDigit(y[iy]))
-                    ny = ny * 10 + (y[iy++] - '0');
+                // Extract numeric digits (without leading zeros)
+                int startX = ix, startY = iy;
+                while (ix < x.Length && char.IsDigit(x[ix])) ix++;
+                while (iy < y.Length && char.IsDigit(y[iy])) iy++;
 
-                if (nx != ny) return nx.CompareTo(ny);
+                int lenX = ix - startX;
+                int lenY = iy - startY;
+
+                // More digits (ignoring leading zeros) = larger number
+                if (lenX != lenY) return lenX.CompareTo(lenY);
+
+                // Same digit count: compare digit by digit
+                for (int i = 0; i < lenX; i++)
+                {
+                    if (x[startX + i] != y[startY + i])
+                        return x[startX + i].CompareTo(y[startY + i]);
+                }
+
+                // Identical numeric value: fewer leading zeros sorts first
+                // e.g., "2" before "02" before "002"
+                if (zx != zy) return zx.CompareTo(zy);
             }
             else
             {
-                var cx = char.ToUpperInvariant(x[ix]);
-                var cy = char.ToUpperInvariant(y[iy]);
-                if (cx != cy) return cx.CompareTo(cy);
+                // Case-insensitive character comparison
+                var ux = char.ToUpperInvariant(cx);
+                var uy = char.ToUpperInvariant(cy);
+                if (ux != uy) return ux.CompareTo(uy);
                 ix++;
                 iy++;
             }
         }
 
-        return x.Length.CompareTo(y.Length);
+        // Shorter string comes first
+        return (x.Length - ix).CompareTo(y.Length - iy);
     }
 }

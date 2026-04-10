@@ -17,7 +17,12 @@ namespace ClipJoin
     {
         private CancellationTokenSource? _cts;
         private readonly VideoMergeService _mergeService = new();
+        private readonly AiSortService _aiSortService = new();
         private string _lastOutputPath = "";
+
+        // Cached analysis for sort operations (set when user clicks Start or sort buttons)
+        private FolderAnalysis? _currentAnalysis;
+        private FolderAnalysisWrapper? _sortedAnalysis;
 
         public MainWindow()
         {
@@ -181,8 +186,20 @@ namespace ClipJoin
             // Analyze the folder structure
             var analysis = _mergeService.AnalyzeFolder(inputPath);
 
-            if (analysis.Groups.Count == 0 ||
-                analysis.Groups.All(g => g.VideoFiles.Count == 0))
+            // Use AI/manual sorted result if available, otherwise use natural sort
+            FolderAnalysis effectiveAnalysis;
+            if (_sortedAnalysis != null)
+            {
+                effectiveAnalysis = _sortedAnalysis.ToAnalysis();
+                AppendLog($"[{DateTime.Now:HH:mm:ss}] ℹ️ 使用自定义排序结果");
+            }
+            else
+            {
+                effectiveAnalysis = analysis;
+            }
+
+            if (effectiveAnalysis.Groups.Count == 0 ||
+                effectiveAnalysis.Groups.All(g => g.VideoFiles.Count == 0))
             {
                 MessageBox.Show(
                     "未在指定文件夹中找到视频文件\n\n" +
@@ -193,14 +210,14 @@ namespace ClipJoin
             }
 
             // Notify user about subdirectory mode
-            if (analysis.Mode == FolderMode.SubDirectory)
+            if (effectiveAnalysis.Mode == FolderMode.SubDirectory)
             {
                 var groupList = string.Join("\n",
-                    analysis.Groups.Select(g => $"  📁 {g.Name}  ({g.VideoFiles.Count} 个视频)"));
+                    effectiveAnalysis.Groups.Select(g => $"  📁 {g.Name}  ({g.VideoFiles.Count} 个视频)"));
 
                 var result = MessageBox.Show(
                     $"📂 检测到子目录模式\n\n" +
-                    $"共发现 {analysis.Groups.Count} 个包含视频的文件夹：\n{groupList}\n\n" +
+                    $"共发现 {effectiveAnalysis.Groups.Count} 个包含视频的文件夹：\n{groupList}\n\n" +
                     $"每个文件夹中的视频将被分别合并为独立的 MP4 文件，\n" +
                     $"所有输出文件将放在同一输出目录下（不创建子文件夹）。\n\n" +
                     $"是否继续？",
@@ -262,15 +279,18 @@ namespace ClipJoin
 
             AppendLog($"输入目录: {inputPath}");
             AppendLog($"输出目录: {outputPath}");
-            AppendLog($"模式: {(analysis.Mode == FolderMode.SubDirectory ? "子目录模式" : "直接模式")}");
-            AppendLog($"共 {analysis.Groups.Count} 个合并任务，" +
-                      $"{analysis.Groups.Sum(g => g.VideoFiles.Count)} 个视频文件");
+            AppendLog($"模式: {(effectiveAnalysis.Mode == FolderMode.SubDirectory ? "子目录模式" : "直接模式")}");
+            AppendLog($"共 {effectiveAnalysis.Groups.Count} 个合并任务，" +
+                      $"{effectiveAnalysis.Groups.Sum(g => g.VideoFiles.Count)} 个视频文件");
             AppendLog(new string('─', 50));
 
             try
             {
                 var progress = new Progress<MergeProgress>(UpdateProgress);
-                await _mergeService.MergeAsync(analysis, outputPath, progress, _cts.Token);
+                await _mergeService.MergeAsync(effectiveAnalysis, outputPath, progress, _cts.Token);
+
+                // Clear sorted analysis after successful merge
+                _sortedAnalysis = null;
 
                 OpenOutputBtn.Visibility = Visibility.Visible;
                 MessageBox.Show(
@@ -398,6 +418,169 @@ namespace ClipJoin
             CancelBtn.IsEnabled = busy;
             InputPathTextBox.IsEnabled = !busy;
             OutputPathTextBox.IsEnabled = !busy;
+            AiSortBtn.IsEnabled = !busy;
+            ManualSortBtn.IsEnabled = !busy;
+        }
+
+        // ────── AI Sort ──────
+
+        private FolderAnalysis? TryGetAnalysis()
+        {
+            var inputPath = InputPathTextBox.Text.Trim();
+            if (string.IsNullOrEmpty(inputPath) || !Directory.Exists(inputPath))
+            {
+                MessageBox.Show("请先选择有效的输入文件夹", "提示",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return null;
+            }
+
+            _currentAnalysis = _mergeService.AnalyzeFolder(inputPath);
+            if (_currentAnalysis.Groups.Count == 0 ||
+                _currentAnalysis.Groups.All(g => g.VideoFiles.Count == 0))
+            {
+                MessageBox.Show("未找到视频文件", "提示",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return null;
+            }
+
+            return _currentAnalysis;
+        }
+
+        private async void AiSort_Click(object sender, RoutedEventArgs e)
+        {
+            var settings = AppSettings.Load();
+            if (!settings.IsConfigured)
+            {
+                var result = MessageBox.Show(
+                    "尚未配置 AI 接口，是否现在配置？", "AI 未配置",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (result == MessageBoxResult.Yes)
+                    Settings_Click(sender, e);
+                return;
+            }
+
+            var analysis = TryGetAnalysis();
+            if (analysis == null) return;
+
+            AiSortBtn.IsEnabled = false;
+            AiSortBtn.Content = "🤖 排序中...";
+            LogPlaceholder.Visibility = Visibility.Collapsed;
+            AppendLog($"[{DateTime.Now:HH:mm:ss}] 🤖 开始 AI 智能排序...");
+
+            var wrapper = FolderAnalysisWrapper.FromAnalysis(analysis);
+            var success = true;
+
+            try
+            {
+                foreach (var group in wrapper.Groups)
+                {
+                    if (group.VideoFiles.Count <= 1) continue;
+
+                    AppendLog($"[{DateTime.Now:HH:mm:ss}]   排序: {group.Name} ({group.VideoFiles.Count} 个文件)");
+
+                    try
+                    {
+                        group.VideoFiles = await _aiSortService.SortFilesAsync(
+                            group.VideoFiles, settings);
+
+                        AppendLog($"[{DateTime.Now:HH:mm:ss}]   ✅ {group.Name} 排序完成");
+                        for (int i = 0; i < group.VideoFiles.Count; i++)
+                            AppendLog($"[{DateTime.Now:HH:mm:ss}]     {i + 1,3}. {Path.GetFileName(group.VideoFiles[i])}");
+                    }
+                    catch (Exception ex)
+                    {
+                        success = false;
+                        AppendLog($"[{DateTime.Now:HH:mm:ss}]   ❌ {group.Name} 排序失败: {ex.Message}");
+                    }
+                }
+
+                _sortedAnalysis = wrapper;
+
+                if (success)
+                {
+                    AppendLog($"[{DateTime.Now:HH:mm:ss}] 🎉 AI 排序全部完成！下次合并将使用 AI 排序结果");
+                    MessageBox.Show(
+                        "AI 排序完成！文件已按智能顺序排列。\n点击「开始合并」将使用新的排序。",
+                        "排序完成", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                {
+                    AppendLog($"[{DateTime.Now:HH:mm:ss}] ⚠️ 部分任务排序失败，可查看日志或导出错误日志");
+                    MessageBox.Show(
+                        "部分文件夹排序失败，失败的将保持原始顺序。\n详情请查看日志或导出错误日志。",
+                        "排序部分完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[{DateTime.Now:HH:mm:ss}] ❌ AI 排序异常: {ex.Message}");
+                MessageBox.Show($"AI 排序失败:\n{ex.Message}", "错误",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                AiSortBtn.IsEnabled = true;
+                AiSortBtn.Content = "🤖 AI 排序";
+            }
+        }
+
+        // ────── Manual Sort ──────
+
+        private void ManualSort_Click(object sender, RoutedEventArgs e)
+        {
+            var analysis = TryGetAnalysis();
+            if (analysis == null) return;
+
+            var wrapper = _sortedAnalysis ?? FolderAnalysisWrapper.FromAnalysis(analysis);
+            var sortWindow = new ManualSortWindow(wrapper) { Owner = this };
+
+            if (sortWindow.ShowDialog() == true && sortWindow.Result != null)
+            {
+                _sortedAnalysis = sortWindow.Result;
+                LogPlaceholder.Visibility = Visibility.Collapsed;
+                AppendLog($"[{DateTime.Now:HH:mm:ss}] ✋ 手动排序已确认，下次合并将使用自定义顺序");
+                foreach (var g in _sortedAnalysis.Groups)
+                {
+                    AppendLog($"[{DateTime.Now:HH:mm:ss}]   {g.Name}:");
+                    for (int i = 0; i < g.VideoFiles.Count; i++)
+                        AppendLog($"[{DateTime.Now:HH:mm:ss}]     {i + 1,3}. {Path.GetFileName(g.VideoFiles[i])}");
+                }
+            }
+        }
+
+        // ────── Settings ──────
+
+        private void Settings_Click(object sender, RoutedEventArgs e)
+        {
+            var win = new SettingsWindow { Owner = this };
+            win.ShowDialog();
+        }
+
+        // ────── Export Log ──────
+
+        private void ExportLog_Click(object sender, RoutedEventArgs e)
+        {
+            var sfd = new SaveFileDialog
+            {
+                Title = "导出 AI 错误日志",
+                Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                FileName = $"ClipJoin_AI_Errors_{DateTime.Now:yyyyMMdd_HHmmss}.txt"
+            };
+
+            if (sfd.ShowDialog() == true)
+            {
+                try
+                {
+                    AiSortService.ExportLogs(sfd.FileName);
+                    MessageBox.Show($"日志已导出到:\n{sfd.FileName}", "导出成功",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"导出失败: {ex.Message}", "错误",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
         }
     }
 }

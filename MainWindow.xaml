@@ -175,17 +175,42 @@
         </Border>
 
         <!-- Action Buttons -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,12">
-            <Button x:Name="StartBtn" Content="🚀 开始合并" Style="{StaticResource PrimaryButton}"
-                    FontSize="16" Padding="28,10"
-                    Click="Start_Click"/>
-            <Button x:Name="CancelBtn" Content="⏹ 取消" Style="{StaticResource SecondaryButton}"
-                    FontSize="14" Padding="18,8" Margin="12,0,0,0"
-                    IsEnabled="False" Click="Cancel_Click"/>
-            <Button x:Name="OpenOutputBtn" Content="📂 打开输出目录" Style="{StaticResource SecondaryButton}"
-                    FontSize="13" Padding="14,8" Margin="12,0,0,0"
-                    Visibility="Collapsed" Click="OpenOutput_Click"/>
-        </StackPanel>
+        <Grid Grid.Row="3" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Orientation="Horizontal">
+                <Button x:Name="StartBtn" Content="🚀 开始合并" Style="{StaticResource PrimaryButton}"
+                        FontSize="16" Padding="28,10"
+                        Click="Start_Click"/>
+                <Button x:Name="CancelBtn" Content="⏹ 取消" Style="{StaticResource SecondaryButton}"
+                        FontSize="14" Padding="18,8" Margin="12,0,0,0"
+                        IsEnabled="False" Click="Cancel_Click"/>
+                <Button x:Name="OpenOutputBtn" Content="📂 打开输出目录" Style="{StaticResource SecondaryButton}"
+                        FontSize="13" Padding="14,8" Margin="12,0,0,0"
+                        Visibility="Collapsed" Click="OpenOutput_Click"/>
+
+                <!-- Sort buttons -->
+                <Border Width="1" Background="#E8E8E8" Margin="16,2,16,2"/>
+                <Button x:Name="AiSortBtn" Content="🤖 AI 排序" Style="{StaticResource SecondaryButton}"
+                        FontSize="13" Padding="14,8"
+                        Click="AiSort_Click" ToolTip="使用 AI 智能排序视频文件（需先配置 API）"/>
+                <Button x:Name="ManualSortBtn" Content="✋ 手动排序" Style="{StaticResource SecondaryButton}"
+                        FontSize="13" Padding="14,8" Margin="8,0,0,0"
+                        Click="ManualSort_Click" ToolTip="手动调整文件播放顺序"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button Content="📋 导出日志" Style="{StaticResource SecondaryButton}"
+                        FontSize="12" Padding="10,6"
+                        Click="ExportLog_Click" ToolTip="导出 AI 错误日志"/>
+                <Button Content="⚙ 设置" Style="{StaticResource SecondaryButton}"
+                        FontSize="12" Padding="10,6" Margin="6,0,0,0"
+                        Click="Settings_Click" ToolTip="配置 AI 排序 API"/>
+            </StackPanel>
+        </Grid>
 
         <!-- Progress Section -->
         <Border Grid.Row="4" x:Name="ProgressSection" Visibility="Collapsed"
