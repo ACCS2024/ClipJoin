@@ -119,6 +119,38 @@ namespace ClipJoin
             }
         }
 
+        private void OutputPath_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
+            e.Handled = true;
+        }
+
+        private void OutputPath_Drop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+                return;
+
+            var paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (paths == null || paths.Length == 0)
+                return;
+
+            var first = paths[0];
+            if (Directory.Exists(first))
+            {
+                OutputPathTextBox.Text = first;
+            }
+            else if (File.Exists(first))
+            {
+                var parentDir = Path.GetDirectoryName(first);
+                if (!string.IsNullOrEmpty(parentDir))
+                    OutputPathTextBox.Text = parentDir;
+            }
+
+            e.Handled = true;
+        }
+
         private void BrowseOutput_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new OpenFolderDialog
