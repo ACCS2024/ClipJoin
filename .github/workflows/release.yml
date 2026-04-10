@@ -1,56 +1,102 @@
-name: Release
+name: Build & Release
 
+# ──────────────────────────────────────────────────────────────
+# 触发方式：
+#   1. 手动触发 (Actions → Run workflow)
+#      可选择递增类型：patch / minor / major
+#   2. 推送到 master 分支时自动触发（默认递增补丁版本）
+#      忽略纯文档变更，避免无意义的 release
+# ──────────────────────────────────────────────────────────────
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version (e.g. v1.0.0)"
+      bump:
+        description: '版本递增类型'
         required: true
-        type: string
-      prerelease:
-        description: "Mark as pre-release"
-        required: false
-        default: false
-        type: boolean
-      release_notes:
-        description: "Release notes (optional)"
-        required: false
-        type: string
+        default: 'patch'
+        type: choice
+        options:
+          - patch   # 1.0.0 → 1.0.1  （默认，bug 修复）
+          - minor   # 1.0.0 → 1.1.0  （新功能）
+          - major   # 1.0.0 → 2.0.0  （破坏性变更）
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
 
 permissions:
-  contents: write
+  contents: write   # 创建 tag 与 release 所需
 
 jobs:
-  build-and-release:
-    name: Build & Publish Release
+  release:
+    name: Build and Publish Release
     runs-on: windows-latest
 
     steps:
-      - name: Validate version format
-        shell: pwsh
-        run: |
-          if ('${{ github.event.inputs.version }}' -notmatch '^v\d+\.\d+\.\d+') {
-            Write-Error "Version must follow semver format: v1.2.3"
-            exit 1
-          }
-
-      - name: Checkout repository
+      # ── 1. 检出完整 git 历史（用于读取所有 tag） ─────────────
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # ── 2. 安装 .NET 10 ───────────────────────────────────────
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: '10.0.x'
 
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build (self-contained, single file)
+      # ── 3. 自动计算下一个版本号 ──────────────────────────────
+      # 读取仓库中所有 vX.Y.Z 格式的 tag，找到最大值后递增
+      - name: Calculate Version
+        id: version
         shell: pwsh
         run: |
-          $version = '${{ github.event.inputs.version }}'.TrimStart('v')
+          $tags = git tag --list 'v*' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' }
+          if ($tags) {
+            $latest = $tags |
+              ForEach-Object { [System.Version]($_ -replace '^v', '') } |
+              Sort-Object -Descending |
+              Select-Object -First 1
+          } else {
+            $latest = [System.Version]'0.0.0'
+          }
+
+          Write-Host "Latest tag: v$latest"
+
+          # workflow_dispatch 有 bump input；push 触发时默认 patch
+          $bump = '${{ github.event.inputs.bump }}'
+          if (-not $bump) { $bump = 'patch' }
+
+          $major = $latest.Major
+          $minor = $latest.Minor
+          $patch = $latest.Build
+
+          switch ($bump) {
+            'major' { $major++; $minor = 0; $patch = 0 }
+            'minor' { $minor++; $patch = 0 }
+            default { $patch++ }
+          }
+
+          $newVersion = "$major.$minor.$patch"
+          $newTag     = "v$newVersion"
+
+          Write-Host "New version : $newVersion  (bump=$bump)"
+
+          "version=$newVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$newTag"         | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # ── 4. 还原 NuGet 依赖 ────────────────────────────────────
+      - name: Restore
+        run: dotnet restore ClipJoin.csproj
+
+      # ── 5. 发布：win-x64 自包含单文件，版本号注入程序集 ──────
+      - name: Publish
+        shell: pwsh
+        run: |
+          $ver = '${{ steps.version.outputs.version }}'
+          $tag = '${{ steps.version.outputs.tag }}'
           dotnet publish ClipJoin.csproj `
             --configuration Release `
             --runtime win-x64 `
@@ -58,44 +104,50 @@ jobs:
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:EnableCompressionInSingleFile=true `
-            -p:AssemblyVersion=$version `
-            -p:FileVersion=$version `
-            -p:InformationalVersion='${{ github.event.inputs.version }}' `
-            --output ./publish
+            -p:DebugType=none `
+            -p:Version=$ver `
+            -p:AssemblyVersion=$ver `
+            -p:FileVersion=$ver `
+            -p:InformationalVersion=$tag `
+            --output artifact/
 
-      - name: Package artifact
+      # ── 6. 打包 ZIP 并生成 SHA256 校验文件 ───────────────────
+      - name: Package ZIP
+        id: package
         shell: pwsh
         run: |
-          $tag     = '${{ github.event.inputs.version }}'
-          $zipName = "ClipJoin-$tag-win-x64.zip"
-          Compress-Archive -Path ./publish/* -DestinationPath $zipName -Force
+          $ver     = '${{ steps.version.outputs.version }}'
+          $zipName = "ClipJoin-v$ver-win-x64.zip"
+
+          # 排除 .pdb 调试符号，只保留运行时文件
+          $items = Get-ChildItem artifact/ -Exclude '*.pdb' | Select-Object -ExpandProperty FullName
+          Compress-Archive -Path $items -DestinationPath $zipName
+
+          # 计算 SHA256 供用户校验
           $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
-          "$hash  $zipName" | Out-File -Encoding utf8 "SHA256SUMS.txt"
-          Write-Output "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          "$hash  $zipName" | Out-File -Encoding utf8 SHA256SUMS.txt
 
-      - name: Generate release body
-        id: release_body
-        shell: pwsh
+          Write-Host "Packaged: $zipName"
+          Write-Host "SHA256  : $hash"
+
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # ── 7. 推送新版本 tag 到仓库 ─────────────────────────────
+      - name: Create Git Tag
         run: |
-          $notes = '${{ github.event.inputs.release_notes }}'
-          $body  = if ($notes) { $notes } else { "Release ${{ github.event.inputs.version }}" }
-          $body += "`n`n---`n"
-          $body += "**Platform**: Windows x64 (self-contained, no .NET runtime required)`n"
-          $body += "**Commit**: ${{ github.sha }}`n"
-          $body += "**Build date**: $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC')`n"
-          # multiline output
-          $delimiter = [System.Guid]::NewGuid().ToString()
-          "RELEASE_BODY<<$delimiter`n$body`n$delimiter" >> $env:GITHUB_OUTPUT
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.tag }}
+          git push origin ${{ steps.version.outputs.tag }}
 
+      # ── 8. 创建 GitHub Release，附上 zip 和 sha256 ───────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: ClipJoin ${{ github.event.inputs.version }}
-          body: ${{ steps.release_body.outputs.RELEASE_BODY }}
-          prerelease: ${{ github.event.inputs.prerelease }}
-          generate_release_notes: false
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "ClipJoin ${{ steps.version.outputs.tag }}"
+          generate_release_notes: true   # 自动从 commit 生成 changelog
           files: |
-            ${{ env.ZIP_NAME }}
+            ${{ steps.package.outputs.zip_name }}
             SHA256SUMS.txt
           fail_on_unmatched_files: true
