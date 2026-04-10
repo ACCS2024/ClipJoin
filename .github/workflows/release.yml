@@ -22,9 +22,11 @@ on:
   push:
     branches:
       - master
-    paths-ignore:
-      - '**.md'
-      - '.gitignore'
+
+# 防止多个 push 同时跑，排队串行执行，避免 tag 版本号冲突
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write   # 创建 tag 与 release 所需
