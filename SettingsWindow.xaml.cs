@@ -26,13 +26,13 @@ namespace ClipJoin
             ApiKeyTextBox.Text = settings.ApiKey;
             ModelTextBox.Text = settings.Model;
 
-            ConflictPrefText.Text = settings.DefaultConflictResolution switch
+            switch (settings.DefaultConflictResolution)
             {
-                ConflictResolution.Skip     => "当前设置：跳过已存在的文件",
-                ConflictResolution.Overwrite => "当前设置：覆盖已存在的文件",
-                ConflictResolution.Rename   => "当前设置：自动重命名输出文件",
-                _                           => "当前设置：每次儿突时询问"
-            };
+                case ConflictResolution.Skip:      ConflictSkipRadio.IsChecked      = true; break;
+                case ConflictResolution.Overwrite: ConflictOverwriteRadio.IsChecked = true; break;
+                case ConflictResolution.Rename:    ConflictRenameRadio.IsChecked    = true; break;
+                default:                           ConflictAskRadio.IsChecked       = true; break;
+            }
         }
 
         private string GetCurrentApiKey()
@@ -141,13 +141,17 @@ namespace ClipJoin
                 return;
             }
 
+            var resolution = ConflictSkipRadio.IsChecked      == true ? ConflictResolution.Skip
+                           : ConflictOverwriteRadio.IsChecked == true ? ConflictResolution.Overwrite
+                           : ConflictRenameRadio.IsChecked    == true ? ConflictResolution.Rename
+                           : ConflictResolution.Ask;
+
             var settings = new AppSettings
             {
                 ApiEndpoint = endpoint,
                 ApiKey = apiKey,
                 Model = string.IsNullOrEmpty(model) ? "deepseek-v3" : model,
-                // Preserve existing conflict preference
-                DefaultConflictResolution = AppSettings.Load().DefaultConflictResolution
+                DefaultConflictResolution = resolution
             };
 
             try
@@ -166,15 +170,6 @@ namespace ClipJoin
         {
             DialogResult = false;
             Close();
-        }
-
-        private void ResetConflict_Click(object sender, RoutedEventArgs e)
-        {
-            var settings = AppSettings.Load();
-            settings.DefaultConflictResolution = ConflictResolution.Ask;
-            settings.Save();
-            ConflictPrefText.Text = "当前设置：每次儿突时询问";
-            ShowStatus("已重置，下次冲突时将重新询问", true);
         }
 
         private void ShowStatus(string message, bool success)
