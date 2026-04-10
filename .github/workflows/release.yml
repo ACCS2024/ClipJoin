@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. v1.0.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        default: false
+        type: boolean
+      release_notes:
+        description: "Release notes (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Validate version format
+        shell: pwsh
+        run: |
+          if ('${{ github.event.inputs.version }}' -notmatch '^v\d+\.\d+\.\d+') {
+            Write-Error "Version must follow semver format: v1.2.3"
+            exit 1
+          }
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build (self-contained, single file)
+        shell: pwsh
+        run: |
+          $version = '${{ github.event.inputs.version }}'.TrimStart('v')
+          dotnet publish ClipJoin.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:AssemblyVersion=$version `
+            -p:FileVersion=$version `
+            -p:InformationalVersion='${{ github.event.inputs.version }}' `
+            --output ./publish
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          $tag     = '${{ github.event.inputs.version }}'
+          $zipName = "ClipJoin-$tag-win-x64.zip"
+          Compress-Archive -Path ./publish/* -DestinationPath $zipName -Force
+          $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
+          "$hash  $zipName" | Out-File -Encoding utf8 "SHA256SUMS.txt"
+          Write-Output "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+      - name: Generate release body
+        id: release_body
+        shell: pwsh
+        run: |
+          $notes = '${{ github.event.inputs.release_notes }}'
+          $body  = if ($notes) { $notes } else { "Release ${{ github.event.inputs.version }}" }
+          $body += "`n`n---`n"
+          $body += "**Platform**: Windows x64 (self-contained, no .NET runtime required)`n"
+          $body += "**Commit**: ${{ github.sha }}`n"
+          $body += "**Build date**: $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC')`n"
+          # multiline output
+          $delimiter = [System.Guid]::NewGuid().ToString()
+          "RELEASE_BODY<<$delimiter`n$body`n$delimiter" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: ClipJoin ${{ github.event.inputs.version }}
+          body: ${{ steps.release_body.outputs.RELEASE_BODY }}
+          prerelease: ${{ github.event.inputs.prerelease }}
+          generate_release_notes: false
+          files: |
+            ${{ env.ZIP_NAME }}
+            SHA256SUMS.txt
+          fail_on_unmatched_files: true
