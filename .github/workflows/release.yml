@@ -55,36 +55,37 @@ jobs:
         id: version
         shell: pwsh
         run: |
+          # workflow_dispatch 有 bump input；push 触发时默认 patch
+          $bump = '${{ github.event.inputs.bump }}'
+          if (-not $bump) { $bump = 'patch' }
+
           $tags = git tag --list 'v*' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' }
           if ($tags) {
             $latest = $tags |
               ForEach-Object { [System.Version]($_ -replace '^v', '') } |
               Sort-Object -Descending |
               Select-Object -First 1
+
+            Write-Host "Latest tag: v$latest"
+
+            $major = $latest.Major
+            $minor = $latest.Minor
+            $patch = $latest.Build
+
+            switch ($bump) {
+              'major' { $major++; $minor = 0; $patch = 0 }
+              'minor' { $minor++; $patch = 0 }
+              default { $patch++ }
+            }
+
+            $newVersion = "$major.$minor.$patch"
           } else {
-            # 仓库没有任何 tag 时，第一个 release 直接从 v1.0.0 开始
-            $latest = [System.Version]'0.9.9'
+            # 仓库没有任何 tag，首次发布固定从 v1.0.0 开始
+            Write-Host "No existing tags found, starting at v1.0.0"
+            $newVersion = "1.0.0"
           }
 
-          Write-Host "Latest tag: v$latest"
-
-          # workflow_dispatch 有 bump input；push 触发时默认 patch
-          $bump = '${{ github.event.inputs.bump }}'
-          if (-not $bump) { $bump = 'patch' }
-
-          $major = $latest.Major
-          $minor = $latest.Minor
-          $patch = $latest.Build
-
-          switch ($bump) {
-            'major' { $major++; $minor = 0; $patch = 0 }
-            'minor' { $minor++; $patch = 0 }
-            default { $patch++ }
-          }
-
-          $newVersion = "$major.$minor.$patch"
-          $newTag     = "v$newVersion"
-
+          $newTag = "v$newVersion"
           Write-Host "New version : $newVersion  (bump=$bump)"
 
           "version=$newVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
