@@ -17,6 +17,7 @@ namespace ClipJoin
                 items.Add(new GroupItem { Name = name, CountLabel = $"{count} 个视频" });
 
             GroupList.ItemsSource = items;
+            Loaded += (_, _) => MaxHeight = SystemParameters.WorkArea.Height * 0.88;
         }
 
         public bool Confirmed { get; private set; }

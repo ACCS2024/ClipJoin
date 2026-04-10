@@ -18,6 +18,7 @@ namespace ClipJoin
             SubtitleText.Text = $"再次合并将产生以下冲突，请决定如何处理";
 
             ConflictList.ItemsSource = conflicts;
+            Loaded += (_, _) => MaxHeight = SystemParameters.WorkArea.Height * 0.88;
         }
 
         private void ConfirmBtn_Click(object sender, RoutedEventArgs e)

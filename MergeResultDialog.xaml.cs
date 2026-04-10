@@ -17,6 +17,7 @@ namespace ClipJoin
             SuccessCount.Text = summary.SucceededCount.ToString();
             SkipCount.Text    = summary.SkippedCount.ToString();
             FailCount.Text    = summary.Failed.Count.ToString();
+            Loaded += (_, _) => MaxHeight = SystemParameters.WorkArea.Height * 0.88;
 
             var elapsed = VideoMergeService.FormatTimeSpan(summary.TotalElapsed);
 
