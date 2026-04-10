@@ -149,7 +149,9 @@
                     </Grid.ColumnDefinitions>
                     <TextBox x:Name="InputPathTextBox" FontSize="13" Padding="8,7"
                              BorderBrush="#D9D9D9" BorderThickness="1"
-                             VerticalContentAlignment="Center"/>
+                             VerticalContentAlignment="Center"
+                             AllowDrop="True" Drop="InputPath_Drop" DragOver="InputPath_DragOver"
+                             TextChanged="InputPathTextBox_TextChanged"/>
                     <Button Grid.Column="1" Content="浏览" Style="{StaticResource SecondaryButton}"
                             Margin="8,0,0,0" Click="BrowseInput_Click"/>
                 </Grid>

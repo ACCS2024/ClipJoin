@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
 using ClipJoin.Services;
 using Microsoft.Win32;
 
@@ -41,6 +42,61 @@ namespace ClipJoin
                 FFmpegWarningBorder.Visibility = Visibility.Visible;
                 StartBtn.IsEnabled = false;
             }
+        }
+
+        /// <summary>
+        /// Auto-fills the output path based on the input path.
+        /// Called whenever the input path changes (typing, browse, or drag-drop).
+        /// </summary>
+        private void AutoFillOutputPath(string inputPath)
+        {
+            if (string.IsNullOrWhiteSpace(inputPath) || !Directory.Exists(inputPath))
+                return;
+            OutputPathTextBox.Text = VideoMergeService.GetDefaultOutputPath(inputPath);
+        }
+
+        private void InputPathTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            AutoFillOutputPath(InputPathTextBox.Text.Trim());
+        }
+
+        /// <summary>
+        /// Handles drag-over on the input TextBox to accept folders and files.
+        /// </summary>
+        private void InputPath_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
+            e.Handled = true;
+        }
+
+        /// <summary>
+        /// Handles drop on the input TextBox. Accepts folders directly,
+        /// and for video files uses their parent directory.
+        /// </summary>
+        private void InputPath_Drop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+                return;
+
+            var paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (paths == null || paths.Length == 0)
+                return;
+
+            var first = paths[0];
+            if (Directory.Exists(first))
+            {
+                InputPathTextBox.Text = first;
+            }
+            else if (File.Exists(first))
+            {
+                var parentDir = Path.GetDirectoryName(first);
+                if (!string.IsNullOrEmpty(parentDir))
+                    InputPathTextBox.Text = parentDir;
+            }
+
+            e.Handled = true;
         }
 
         private void BrowseInput_Click(object sender, RoutedEventArgs e)
@@ -163,6 +219,37 @@ namespace ClipJoin
                 outputPath = VideoMergeService.GetDefaultOutputPath(inputPath);
             }
 
+            // Validate: input and output must not be the same directory
+            try
+            {
+                var normalizedInput = Path.GetFullPath(inputPath)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var normalizedOutput = Path.GetFullPath(outputPath)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                if (string.Equals(normalizedInput, normalizedOutput, StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show("输入文件夹和输出文件夹不能相同，否则可能覆盖源文件", "错误",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                // Prevent output inside input (would cause recursive processing)
+                if (normalizedOutput.StartsWith(normalizedInput + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show("输出文件夹不能位于输入文件夹内部，否则可能导致递归处理", "错误",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"路径无效: {ex.Message}", "错误",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
             _lastOutputPath = outputPath;
 
             // Prepare UI
@@ -236,35 +323,39 @@ namespace ClipJoin
 
         /// <summary>
         /// Handles drag-over events to show drop feedback.
+        /// Accepts both folders and files (files will use their parent directory).
         /// </summary>
         private void Window_DragOver(object sender, DragEventArgs e)
         {
-            if (e.Data.GetDataPresent(DataFormats.FileDrop))
-            {
-                var files = (string[])e.Data.GetData(DataFormats.FileDrop);
-                e.Effects = files != null && files.Length > 0 && Directory.Exists(files[0])
-                    ? DragDropEffects.Copy
-                    : DragDropEffects.None;
-            }
-            else
-            {
-                e.Effects = DragDropEffects.None;
-            }
+            e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
             e.Handled = true;
         }
 
         /// <summary>
-        /// Handles folder drop onto the window to set the input path.
+        /// Handles drop onto the window. Accepts folders directly,
+        /// and for files uses their parent directory as the input path.
         /// </summary>
         private void Window_Drop(object sender, DragEventArgs e)
         {
-            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+                return;
+
+            var paths = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (paths == null || paths.Length == 0)
+                return;
+
+            var first = paths[0];
+            if (Directory.Exists(first))
             {
-                var files = (string[])e.Data.GetData(DataFormats.FileDrop);
-                if (files != null && files.Length > 0 && Directory.Exists(files[0]))
-                {
-                    InputPathTextBox.Text = files[0];
-                }
+                InputPathTextBox.Text = first;
+            }
+            else if (File.Exists(first))
+            {
+                var parentDir = Path.GetDirectoryName(first);
+                if (!string.IsNullOrEmpty(parentDir))
+                    InputPathTextBox.Text = parentDir;
             }
         }
 
