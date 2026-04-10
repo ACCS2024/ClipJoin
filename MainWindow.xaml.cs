@@ -212,20 +212,14 @@ namespace ClipJoin
             // Notify user about subdirectory mode
             if (effectiveAnalysis.Mode == FolderMode.SubDirectory)
             {
-                var groupList = string.Join("\n",
-                    effectiveAnalysis.Groups.Select(g => $"  📁 {g.Name}  ({g.VideoFiles.Count} 个视频)"));
-
-                var result = MessageBox.Show(
-                    $"📂 检测到子目录模式\n\n" +
-                    $"共发现 {effectiveAnalysis.Groups.Count} 个包含视频的文件夹：\n{groupList}\n\n" +
-                    $"每个文件夹中的视频将被分别合并为独立的 MP4 文件，\n" +
-                    $"所有输出文件将放在同一输出目录下（不创建子文件夹）。\n\n" +
-                    $"是否继续？",
-                    "子目录模式确认",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Information);
-
-                if (result != MessageBoxResult.Yes)
+                var dlg = new SubdirConfirmDialog(
+                    effectiveAnalysis.Groups.Count,
+                    effectiveAnalysis.Groups.Select(g => (g.Name, g.VideoFiles.Count)))
+                {
+                    Owner = this
+                };
+                dlg.ShowDialog();
+                if (!dlg.Confirmed)
                     return;
             }
 
