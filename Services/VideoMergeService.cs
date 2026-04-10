@@ -329,33 +329,38 @@ public class VideoMergeService
             // Parse stderr for progress updates
             _ = Task.Run(async () =>
             {
-                using var reader = proc.StandardError;
-                while (await reader.ReadLineAsync(cancellationToken) is { } line)
+                try
                 {
-                    var timeIdx = line.IndexOf("time=", StringComparison.Ordinal);
-                    if (timeIdx >= 0 && totalDuration > 0)
+                    using var reader = proc.StandardError;
+                    while (await reader.ReadLineAsync(cancellationToken) is { } line)
                     {
-                        var timeStr = line[(timeIdx + 5)..].Split(' ')[0];
-                        if (TryParseFFmpegTime(timeStr, out var currentTime))
+                        var timeIdx = line.IndexOf("time=", StringComparison.Ordinal);
+                        if (timeIdx >= 0 && totalDuration > 0)
                         {
-                            var folderPercent = Math.Min(100, currentTime / totalDuration * 100);
-                            var totalPercent = (groupIndex + folderPercent / 100.0) / totalGroups * 100;
-
-                            progress.Report(new MergeProgress
+                            var timeStr = line[(timeIdx + 5)..].Split(' ')[0];
+                            if (TryParseFFmpegTime(timeStr, out var currentTime))
                             {
-                                StatusMessage = $"正在合并: {group.Name}",
-                                CurrentTask = $"合并进度: {FormatTimeSpan(TimeSpan.FromSeconds(currentTime))} / {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}",
-                                CompletedFolders = groupIndex,
-                                TotalFolders = totalGroups,
-                                FolderPercent = folderPercent,
-                                TotalPercent = totalPercent,
-                                Elapsed = stopwatch.Elapsed,
-                                EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + folderPercent / 100.0, totalGroups)
-                            });
+                                var folderPercent = Math.Min(100, currentTime / totalDuration * 100);
+                                var totalPercent = (groupIndex + folderPercent / 100.0) / totalGroups * 100;
+
+                                progress.Report(new MergeProgress
+                                {
+                                    StatusMessage = $"正在合并: {group.Name}",
+                                    CurrentTask = $"合并进度: {FormatTimeSpan(TimeSpan.FromSeconds(currentTime))} / {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}",
+                                    CompletedFolders = groupIndex,
+                                    TotalFolders = totalGroups,
+                                    FolderPercent = folderPercent,
+                                    TotalPercent = totalPercent,
+                                    Elapsed = stopwatch.Elapsed,
+                                    EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + folderPercent / 100.0, totalGroups)
+                                });
+                            }
                         }
                     }
                 }
-            }, cancellationToken);
+                catch (OperationCanceledException) { /* expected on cancel */ }
+                catch { /* ignore stderr parsing errors to avoid unobserved task exceptions */ }
+            }, CancellationToken.None);
 
             try
             {
