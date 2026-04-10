@@ -40,6 +40,7 @@
         <ScrollViewer Grid.Row="1"
                       VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled"
+                      MaxHeight="340"
                       Margin="20,12,20,0"
                       Focusable="False">
             <ItemsControl x:Name="GroupList">
