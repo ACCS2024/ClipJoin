@@ -303,7 +303,7 @@ namespace ClipJoin
         /// </summary>
         private void SetUIBusy(bool busy)
         {
-            StartBtn.IsEnabled = !busy;
+            StartBtn.IsEnabled = !busy && FFmpegHelper.IsAvailable();
             CancelBtn.IsEnabled = busy;
             InputPathTextBox.IsEnabled = !busy;
             OutputPathTextBox.IsEnabled = !busy;

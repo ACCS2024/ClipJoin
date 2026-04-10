@@ -138,6 +138,13 @@ public static class FFmpegHelper
                 throw new InvalidOperationException("解压后未找到 FFmpeg 可执行文件");
             }
 
+            // Validate both executables were installed
+            if (!File.Exists(FFmpegExePath) || !File.Exists(FFprobeExePath))
+                throw new InvalidOperationException(
+                    "FFmpeg 安装不完整：" +
+                    (!File.Exists(FFmpegExePath) ? "缺少 ffmpeg.exe " : "") +
+                    (!File.Exists(FFprobeExePath) ? "缺少 ffprobe.exe" : ""));
+
             if (Directory.Exists(extractDir))
                 Directory.Delete(extractDir, true);
 

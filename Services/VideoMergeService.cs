@@ -103,10 +103,11 @@ public class VideoMergeService
             // Also include root-level videos as a group if any
             if (directVideos.Count > 0)
             {
+                var rootName = Path.GetFileName(inputPath.TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
                 subGroups.Insert(0, new MergeGroup
                 {
-                    Name = Path.GetFileName(inputPath.TrimEnd(
-                        Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                    Name = SafeFileName(rootName),
                     SourceDir = inputPath,
                     VideoFiles = directVideos,
                     ImageFiles = directImages
@@ -121,8 +122,8 @@ public class VideoMergeService
         }
 
         // Direct mode: video files in the folder itself
-        var folderName = Path.GetFileName(
-            inputPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var folderName = SafeFileName(Path.GetFileName(
+            inputPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
 
         return new FolderAnalysis
         {
@@ -141,11 +142,35 @@ public class VideoMergeService
     }
 
     /// <summary>
+    /// Sanitizes a string for use as a file/folder name by replacing illegal characters.
+    /// </summary>
+    private static string SafeFileName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return "output";
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var safe = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim().TrimEnd('.');
+        return string.IsNullOrWhiteSpace(safe) ? "output" : safe;
+    }
+
+    /// <summary>
     /// Gets the default output path: a sibling directory with "_out" suffix.
     /// </summary>
     public static string GetDefaultOutputPath(string inputPath)
     {
         var trimmed = inputPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var root = Path.GetPathRoot(inputPath);
+
+        // Special-case drive/UNC roots: e.g. "D:\" → "D:\root_out"
+        if (string.Equals(trimmed, root?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            var driveLetter = trimmed.Replace(":", "").Replace("\\", "").Replace("/", "");
+            var safeName = string.IsNullOrWhiteSpace(driveLetter) ? "root" : driveLetter;
+            return Path.Combine(root!, safeName + "_out");
+        }
+
         var parent = Path.GetDirectoryName(trimmed);
         var folderName = Path.GetFileName(trimmed);
         return Path.Combine(parent ?? trimmed, folderName + "_out");
@@ -162,6 +187,9 @@ public class VideoMergeService
     {
         var ffmpeg = FFmpegHelper.FindFFmpeg()
                      ?? throw new InvalidOperationException("FFmpeg 未找到，请先安装 FFmpeg");
+
+        if (FFmpegHelper.FindFFprobe() == null)
+            throw new InvalidOperationException("FFprobe 未找到，请确保 FFmpeg 完整安装（需包含 ffprobe）");
 
         var totalGroups = analysis.Groups.Count;
         var stopwatch = Stopwatch.StartNew();
@@ -288,10 +316,10 @@ public class VideoMergeService
             var psi = new ProcessStartInfo
             {
                 FileName = ffmpegPath,
-                Arguments = $"-f concat -safe 0 -i \"{listFile}\" -c copy -y \"{outputFile}\"",
+                Arguments = $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c copy -movflags +faststart -y \"{outputFile}\"",
                 CreateNoWindow = true,
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
+                RedirectStandardOutput = false,
                 RedirectStandardError = true
             };
 
@@ -329,7 +357,27 @@ public class VideoMergeService
                 }
             }, cancellationToken);
 
-            await proc.WaitForExitAsync(cancellationToken);
+            try
+            {
+                await proc.WaitForExitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    if (!proc.HasExited)
+                        proc.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException) { }
+
+                try
+                {
+                    await proc.WaitForExitAsync(CancellationToken.None);
+                }
+                catch (InvalidOperationException) { }
+
+                throw;
+            }
 
             if (proc.ExitCode != 0)
             {
