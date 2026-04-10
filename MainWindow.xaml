@@ -5,8 +5,272 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:ClipJoin"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
+        Title="ClipJoin - 短剧视频合并工具"
+        Height="720" Width="920"
+        MinHeight="600" MinWidth="700"
+        WindowStartupLocation="CenterScreen"
+        Background="#F0F2F5"
+        AllowDrop="True"
+        Drop="Window_Drop"
+        DragOver="Window_DragOver">
 
+    <Window.Resources>
+        <!-- Shared button style -->
+        <Style x:Key="PrimaryButton" TargetType="Button">
+            <Setter Property="Background" Value="#1677FF"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Padding" Value="20,8"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#4096FF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Background" Value="#A0C4FF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SecondaryButton" TargetType="Button">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Foreground" Value="#333"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="BorderBrush" Value="#D9D9D9"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="BorderBrush" Value="#1677FF"/>
+                                <Setter Property="Foreground" Value="#1677FF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#BBB"/>
+                                <Setter Property="BorderBrush" Value="#EEE"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CardBorder" TargetType="Border">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="BorderBrush" Value="#E8E8E8"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="16"/>
+            <Setter Property="Margin" Value="0,0,0,12"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock Text="ClipJoin" FontSize="28" FontWeight="Bold" Foreground="#1A1A1A"/>
+            <TextBlock Text="短剧视频合并工具 · 效率模式（直接拼接不转码）" FontSize="13" Foreground="#8C8C8C" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <!-- FFmpeg Status -->
+        <Grid Grid.Row="1" Margin="0,0,0,12">
+            <!-- Warning state -->
+            <Border x:Name="FFmpegWarningBorder" Visibility="Collapsed"
+                    Background="#FFFBE6" BorderBrush="#FFE58F" BorderThickness="1"
+                    CornerRadius="6" Padding="12,10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="⚠" FontSize="16" Foreground="#FAAD14" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBlock x:Name="FFmpegStatusText" Text="未检测到 FFmpeg 环境"
+                                   VerticalAlignment="Center" FontSize="13" Foreground="#614700"/>
+                    </StackPanel>
+                    <Button x:Name="InstallFFmpegBtn" Grid.Column="1"
+                            Content="自动安装 FFmpeg" Style="{StaticResource PrimaryButton}"
+                            FontSize="12" Padding="14,5"
+                            Click="InstallFFmpeg_Click"/>
+                </Grid>
+            </Border>
+            <!-- OK state -->
+            <Border x:Name="FFmpegOkBorder" Visibility="Collapsed"
+                    Background="#F6FFED" BorderBrush="#B7EB8F" BorderThickness="1"
+                    CornerRadius="6" Padding="12,10">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="✅" FontSize="14" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock Text="FFmpeg 已就绪" FontSize="13" Foreground="#135200" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Folder Selection Card -->
+        <Border Grid.Row="2" Style="{StaticResource CardBorder}">
+            <StackPanel>
+                <!-- Input folder -->
+                <TextBlock Text="输入文件夹" FontSize="13" FontWeight="SemiBold" Foreground="#333" Margin="0,0,0,6"/>
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="InputPathTextBox" FontSize="13" Padding="8,7"
+                             BorderBrush="#D9D9D9" BorderThickness="1"
+                             VerticalContentAlignment="Center"/>
+                    <Button Grid.Column="1" Content="浏览" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Click="BrowseInput_Click"/>
+                </Grid>
+
+                <!-- Output folder -->
+                <TextBlock Text="输出文件夹" FontSize="13" FontWeight="SemiBold" Foreground="#333" Margin="0,0,0,6"/>
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="OutputPathTextBox" FontSize="13" Padding="8,7"
+                             BorderBrush="#D9D9D9" BorderThickness="1"
+                             VerticalContentAlignment="Center"/>
+                    <Button Grid.Column="1" Content="浏览" Style="{StaticResource SecondaryButton}"
+                            Margin="8,0,0,0" Click="BrowseOutput_Click"/>
+                </Grid>
+                <TextBlock Text="💡 留空则自动输出到同级目录（例如：D:\视频 → D:\视频_out）"
+                           FontSize="11" Foreground="#8C8C8C" Margin="0,2,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Action Buttons -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,12">
+            <Button x:Name="StartBtn" Content="🚀 开始合并" Style="{StaticResource PrimaryButton}"
+                    FontSize="16" Padding="28,10"
+                    Click="Start_Click"/>
+            <Button x:Name="CancelBtn" Content="⏹ 取消" Style="{StaticResource SecondaryButton}"
+                    FontSize="14" Padding="18,8" Margin="12,0,0,0"
+                    IsEnabled="False" Click="Cancel_Click"/>
+            <Button x:Name="OpenOutputBtn" Content="📂 打开输出目录" Style="{StaticResource SecondaryButton}"
+                    FontSize="13" Padding="14,8" Margin="12,0,0,0"
+                    Visibility="Collapsed" Click="OpenOutput_Click"/>
+        </StackPanel>
+
+        <!-- Progress Section -->
+        <Border Grid.Row="4" x:Name="ProgressSection" Visibility="Collapsed"
+                Style="{StaticResource CardBorder}">
+            <StackPanel>
+                <TextBlock x:Name="StatusText" FontSize="15" FontWeight="SemiBold"
+                           Foreground="#1A1A1A" Margin="0,0,0,4"/>
+                <TextBlock x:Name="CurrentTaskText" FontSize="12"
+                           Foreground="#8C8C8C" Margin="0,0,0,10"/>
+
+                <!-- Folder progress -->
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="当前任务" FontSize="12" Foreground="#595959" VerticalAlignment="Center"/>
+                    <ProgressBar Grid.Column="1" x:Name="FolderProgressBar" Height="16"
+                                 Maximum="100" Value="0" Margin="10,0"
+                                 Foreground="#1677FF" Background="#F0F0F0"/>
+                    <TextBlock x:Name="FolderPercentText" Grid.Column="2" FontSize="12"
+                               Foreground="#595959" VerticalAlignment="Center" MinWidth="40"
+                               TextAlignment="Right" Text="0%"/>
+                </Grid>
+
+                <!-- Total progress -->
+                <Grid Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="总  进  度" FontSize="12" Foreground="#595959" VerticalAlignment="Center"/>
+                    <ProgressBar Grid.Column="1" x:Name="TotalProgressBar" Height="16"
+                                 Maximum="100" Value="0" Margin="10,0"
+                                 Foreground="#52C41A" Background="#F0F0F0"/>
+                    <TextBlock x:Name="TotalPercentText" Grid.Column="2" FontSize="12"
+                               Foreground="#595959" VerticalAlignment="Center" MinWidth="40"
+                               TextAlignment="Right" Text="0%"/>
+                </Grid>
+
+                <!-- Time info -->
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="ElapsedTimeText" FontSize="12" Foreground="#8C8C8C"
+                               Text="已用时: 00:00"/>
+                    <TextBlock x:Name="RemainingTimeText" Grid.Column="1" FontSize="12"
+                               Foreground="#8C8C8C" HorizontalAlignment="Right"
+                               Text="预计剩余: --"/>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Log area -->
+        <Border Grid.Row="5" Background="White" BorderBrush="#E8E8E8"
+                BorderThickness="1" CornerRadius="8">
+            <Grid>
+                <TextBox x:Name="LogTextBox" IsReadOnly="True"
+                         TextWrapping="Wrap" AcceptsReturn="True"
+                         VerticalScrollBarVisibility="Auto"
+                         FontFamily="Consolas, Microsoft YaHei" FontSize="12"
+                         Background="Transparent" BorderThickness="0" Padding="12"
+                         Foreground="#434343"/>
+                <!-- Placeholder when empty -->
+                <TextBlock x:Name="LogPlaceholder"
+                           Text="日志输出区域 · 拖放文件夹到窗口可快速设置输入路径"
+                           FontSize="12" Foreground="#BFBFBF"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           IsHitTestVisible="False"/>
+            </Grid>
+        </Border>
+
+        <!-- Footer status -->
+        <Grid Grid.Row="6" Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="FooterText" Text="就绪" FontSize="11" Foreground="#BFBFBF"
+                       VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="1" FontSize="11" Foreground="#BFBFBF" VerticalAlignment="Center">
+                <Run Text="ClipJoin v1.0"/>
+            </TextBlock>
+        </Grid>
     </Grid>
 </Window>
