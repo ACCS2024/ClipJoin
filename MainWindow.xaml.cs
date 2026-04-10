@@ -5,6 +5,8 @@ using System.Linq;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Media;
 using ClipJoin.Services;
 using Microsoft.Win32;
 
@@ -304,7 +306,7 @@ namespace ClipJoin
             SetUIBusy(true);
             ProgressSection.Visibility = Visibility.Visible;
             OpenOutputBtn.Visibility = Visibility.Collapsed;
-            LogTextBox.Clear();
+            LogTextBox.Document.Blocks.Clear();
             LogPlaceholder.Visibility = Visibility.Collapsed;
 
             AppendLog($"输入目录: {inputPath}");
@@ -317,17 +319,14 @@ namespace ClipJoin
             try
             {
                 var progress = new Progress<MergeProgress>(UpdateProgress);
-                await _mergeService.MergeAsync(effectiveAnalysis, outputPath, progress, resolution, _cts.Token);
+                var summary = await _mergeService.MergeAsync(effectiveAnalysis, outputPath, progress, resolution, _cts.Token);
 
                 // Clear sorted analysis after successful merge
                 _sortedAnalysis = null;
 
                 OpenOutputBtn.Visibility = Visibility.Visible;
-                MessageBox.Show(
-                    $"🎉 全部合并完成！\n\n输出目录: {outputPath}",
-                    "完成",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
+                var resultDlg = new MergeResultDialog(summary, outputPath) { Owner = this };
+                resultDlg.ShowDialog();
             }
             catch (OperationCanceledException)
             {
@@ -337,7 +336,7 @@ namespace ClipJoin
             }
             catch (Exception ex)
             {
-                AppendLog($"[{DateTime.Now:HH:mm:ss}] ❌ 错误: {ex.Message}");
+                AppendLogError($"[{DateTime.Now:HH:mm:ss}] ❌ 错误: {ex.Message}");
                 MessageBox.Show($"合并过程中出现错误:\n{ex.Message}", "错误",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
@@ -428,14 +427,36 @@ namespace ClipJoin
 
             if (!string.IsNullOrEmpty(p.LogMessage))
             {
-                AppendLog(p.LogMessage);
+                if (p.IsGroupError)
+                    AppendLogError(p.LogMessage);
+                else
+                    AppendLog(p.LogMessage);
             }
         }
 
         private void AppendLog(string message)
         {
             LogPlaceholder.Visibility = Visibility.Collapsed;
-            LogTextBox.AppendText(message + Environment.NewLine);
+            var para = new Paragraph(new Run(message))
+            {
+                Margin = new Thickness(0),
+                LineHeight = 1.4 * LogTextBox.FontSize
+            };
+            LogTextBox.Document.Blocks.Add(para);
+            LogTextBox.ScrollToEnd();
+        }
+
+        /// <summary>Appends a log line in red to highlight failures.</summary>
+        private void AppendLogError(string message)
+        {
+            LogPlaceholder.Visibility = Visibility.Collapsed;
+            var para = new Paragraph(new Run(message))
+            {
+                Margin      = new Thickness(0),
+                LineHeight  = 1.4 * LogTextBox.FontSize,
+                Foreground  = Brushes.Crimson
+            };
+            LogTextBox.Document.Blocks.Add(para);
             LogTextBox.ScrollToEnd();
         }
 

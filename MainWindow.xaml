@@ -272,12 +272,17 @@
         <Border Grid.Row="5" Background="White" BorderBrush="#E8E8E8"
                 BorderThickness="1" CornerRadius="8">
             <Grid>
-                <TextBox x:Name="LogTextBox" IsReadOnly="True"
-                         TextWrapping="Wrap" AcceptsReturn="True"
-                         VerticalScrollBarVisibility="Auto"
-                         FontFamily="Consolas, Microsoft YaHei" FontSize="12"
-                         Background="Transparent" BorderThickness="0" Padding="12"
-                         Foreground="#434343"/>
+                <RichTextBox x:Name="LogTextBox" IsReadOnly="True"
+                             VerticalScrollBarVisibility="Auto"
+                             FontFamily="Consolas, Microsoft YaHei" FontSize="12"
+                             Background="Transparent" BorderThickness="0" Padding="12"
+                             Foreground="#434343"
+                             IsDocumentEnabled="False"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <RichTextBox.Document>
+                        <FlowDocument PageWidth="9999"/>
+                    </RichTextBox.Document>
+                </RichTextBox>
                 <!-- Placeholder when empty -->
                 <TextBlock x:Name="LogPlaceholder"
                            Text="日志输出区域 · 拖放文件夹到窗口可快速设置输入路径"

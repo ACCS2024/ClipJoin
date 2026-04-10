@@ -24,6 +24,28 @@ public class MergeProgress
     public TimeSpan Elapsed { get; init; }
     public TimeSpan EstimatedRemaining { get; init; }
     public string? LogMessage { get; init; }
+    /// <summary>True when the current group just failed (so UI can highlight it).</summary>
+    public bool IsGroupError { get; init; }
+}
+
+/// <summary>
+/// A single group-level failure recorded during the merge.
+/// </summary>
+public record FailedGroup(string GroupName, string ErrorMessage);
+
+/// <summary>
+/// Summary returned by <see cref="VideoMergeService.MergeAsync"/> after the whole batch completes.
+/// </summary>
+public class MergeSummary
+{
+    public int SucceededCount { get; init; }
+    public int SkippedCount { get; init; }
+    public IReadOnlyList<FailedGroup> Failed { get; init; } = [];
+    public TimeSpan TotalElapsed { get; init; }
+
+    public bool HasFailures => Failed.Count > 0;
+    public bool IsFullSuccess => Failed.Count == 0 && SkippedCount == 0;
+    public int TotalHandled => SucceededCount + SkippedCount + Failed.Count;
 }
 
 /// <summary>
@@ -230,7 +252,7 @@ public class VideoMergeService
     /// <summary>
     /// Executes the merge operation for all groups in the analysis.
     /// </summary>
-    public async Task MergeAsync(
+    public async Task<MergeSummary> MergeAsync(
         FolderAnalysis analysis,
         string outputPath,
         IProgress<MergeProgress> progress,
@@ -246,6 +268,9 @@ public class VideoMergeService
         var totalGroups = analysis.Groups.Count;
         var stopwatch = Stopwatch.StartNew();
         var sessionLog = new StringBuilder();
+        var failedGroups = new List<FailedGroup>();
+        int succeededCount = 0;
+        int skippedCount = 0;
 
         Directory.CreateDirectory(outputPath);
 
@@ -320,6 +345,7 @@ public class VideoMergeService
                             EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, i + 1, totalGroups),
                             LogMessage = $"[{DateTime.Now:HH:mm:ss}] ⏭ 跳过已存在: {group.Name}.mp4"
                         });
+                        skippedCount++;
                         continue;
 
                     case ConflictResolution.Rename:
@@ -345,6 +371,8 @@ public class VideoMergeService
             }
             // ──────────────────────────────────────────────────────────────
 
+            try
+            {
             if (group.VideoFiles.Count == 1)
             {
                 sessionLog.AppendLine($"  操作: 单文件复制");
@@ -389,30 +417,80 @@ public class VideoMergeService
             });
 
             sessionLog.AppendLine($"  完成时间: {DateTime.Now:HH:mm:ss}");
+            succeededCount++;
+            }
+            catch (OperationCanceledException)
+            {
+                // User cancelled — rethrow immediately, do not swallow
+                throw;
+            }
+            catch (Exception groupEx)
+            {
+                failedGroups.Add(new FailedGroup(group.Name, groupEx.Message));
+                sessionLog.AppendLine($"  结果: 失败 — {groupEx.Message}");
+
+                progress.Report(new MergeProgress
+                {
+                    StatusMessage = $"失败: {group.Name}",
+                    CurrentTask = $"任务失败，继续处理下一个...",
+                    CompletedFolders = i + 1,
+                    TotalFolders = totalGroups,
+                    FolderPercent = 0,
+                    TotalPercent = (double)(i + 1) / totalGroups * 100,
+                    Elapsed = stopwatch.Elapsed,
+                    EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, i + 1, totalGroups),
+                    LogMessage = $"[{DateTime.Now:HH:mm:ss}] ❌ 任务失败: {group.Name} — {groupEx.Message}",
+                    IsGroupError = true
+                });
+            }
         }
 
         stopwatch.Stop();
 
+        var failedSummary = failedGroups.Count > 0
+            ? $"\n失败任务 ({failedGroups.Count}):\n" + string.Join("\n", failedGroups.Select(f => $"  • {f.GroupName}: {f.ErrorMessage}"))
+            : "";
+
         sessionLog.AppendLine();
         sessionLog.AppendLine(new string('═', 60));
         sessionLog.AppendLine($"全部完成，总耗时: {FormatTimeSpan(stopwatch.Elapsed)}");
+        sessionLog.AppendLine($"成功: {succeededCount}，跳过: {skippedCount}，失败: {failedGroups.Count}");
+        if (failedGroups.Count > 0)
+        {
+            sessionLog.AppendLine("失败任务:");
+            foreach (var f in failedGroups)
+                sessionLog.AppendLine($"  • {f.GroupName}: {f.ErrorMessage}");
+        }
 
         // Save session log file to output directory
         SaveSessionLog(outputPath, sessionStart, sessionLog);
 
+        var summaryIcon = failedGroups.Count == 0 ? "🎉" : failedGroups.Count < totalGroups ? "⚠️" : "❌";
+        var summaryMsg = failedGroups.Count == 0
+            ? $"全部完成！共处理 {totalGroups} 个任务"
+            : $"完成 {succeededCount}，失败 {failedGroups.Count}，跳过 {skippedCount}；详情见日志";
+
         progress.Report(new MergeProgress
         {
-            StatusMessage = "全部任务完成！",
-            CurrentTask = $"已完成全部 {totalGroups} 个任务",
+            StatusMessage = $"{summaryIcon} 批处理完成",
+            CurrentTask = summaryMsg,
             CompletedFolders = totalGroups,
             TotalFolders = totalGroups,
             FolderPercent = 100,
             TotalPercent = 100,
             Elapsed = stopwatch.Elapsed,
             EstimatedRemaining = TimeSpan.Zero,
-            LogMessage = $"[{DateTime.Now:HH:mm:ss}] 🎉 全部完成！共处理 {totalGroups} 个任务，总耗时: {FormatTimeSpan(stopwatch.Elapsed)}\n" +
+            LogMessage = $"[{DateTime.Now:HH:mm:ss}] {summaryIcon} {summaryMsg}，总耗时: {FormatTimeSpan(stopwatch.Elapsed)}\n" +
                          $"[{DateTime.Now:HH:mm:ss}] 📄 日志已保存到输出目录"
         });
+
+        return new MergeSummary
+        {
+            SucceededCount = succeededCount,
+            SkippedCount = skippedCount,
+            Failed = failedGroups,
+            TotalElapsed = stopwatch.Elapsed
+        };
     }
 
     /// <summary>
