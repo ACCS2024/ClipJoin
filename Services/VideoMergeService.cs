@@ -545,24 +545,36 @@ public class VideoMergeService
                 totalDuration += await FFmpegHelper.GetVideoDurationAsync(video, cancellationToken);
             }
 
-            var ffmpegArgs = $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c copy -movflags +faststart -y \"{outputFile}\"";
+            // Pre-check audio stream compatibility across all segments.
+            // If any segment differs in codec/sample-rate/channels, force audio re-encoding
+            // so that the output file is not silently broken (exit code 0 but corrupt audio).
+            var audioCompatible = await FFmpegHelper.AudioStreamsCompatibleAsync(group.VideoFiles, cancellationToken);
+            var ffmpegArgs = audioCompatible
+                ? $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c copy -movflags +faststart -y \"{outputFile}\""
+                : $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c:v copy -c:a aac -b:a 192k -movflags +faststart -y \"{outputFile}\"";
 
             // Log the full FFmpeg command
             sessionLog.AppendLine($"  输出文件: {outputFile}");
             sessionLog.AppendLine($"  总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}");
+            if (!audioCompatible)
+                sessionLog.AppendLine($"  注意: 检测到各分集音频参数不一致，已启用音频重编码模式");
             sessionLog.AppendLine($"  FFmpeg 命令: {ffmpegPath} {ffmpegArgs}");
 
             progress.Report(new MergeProgress
             {
                 StatusMessage = $"正在合并: {group.Name}",
-                CurrentTask = $"总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}，正在拼接...",
+                CurrentTask = audioCompatible
+                    ? $"总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}，正在拼接..."
+                    : $"总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}，音频不兼容，正在重编码音频...",
                 CompletedFolders = groupIndex,
                 TotalFolders = totalGroups,
                 FolderPercent = 0,
                 TotalPercent = (double)groupIndex / totalGroups * 100,
                 Elapsed = stopwatch.Elapsed,
                 EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex, totalGroups),
-                LogMessage = $"[{DateTime.Now:HH:mm:ss}] 合并 {group.VideoFiles.Count} 个文件，总时长 {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}"
+                LogMessage = audioCompatible
+                    ? $"[{DateTime.Now:HH:mm:ss}] 合并 {group.VideoFiles.Count} 个文件，总时长 {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}"
+                    : $"[{DateTime.Now:HH:mm:ss}] 合并 {group.VideoFiles.Count} 个文件，总时长 {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}（音频重编码）"
             });
 
             // Run FFmpeg with concat demuxer (no re-encoding)

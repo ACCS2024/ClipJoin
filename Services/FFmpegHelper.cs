@@ -161,6 +161,61 @@ public static class FFmpegHelper
     }
 
     /// <summary>
+    /// Gets key audio stream parameters (sample_rate, channels, codec_name) via FFprobe.
+    /// Returns null if the file has no audio stream.
+    /// </summary>
+    public static async Task<AudioStreamInfo?> GetAudioInfoAsync(
+        string filePath,
+        CancellationToken cancellationToken = default)
+    {
+        var ffprobe = FindFFprobe() ?? FFprobeExePath;
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffprobe,
+            Arguments = $"-v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of csv=p=0 \"{filePath}\"",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        using var proc = Process.Start(psi);
+        if (proc == null) return null;
+
+        var output = (await proc.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+        await proc.WaitForExitAsync(cancellationToken);
+
+        // Expected format: codec_name,sample_rate,channels  e.g. "aac,48000,2"
+        var parts = output.Split(',');
+        if (parts.Length < 3) return null;
+
+        return new AudioStreamInfo(
+            CodecName: parts[0].Trim(),
+            SampleRate: parts[1].Trim(),
+            Channels: parts[2].Trim());
+    }
+
+    /// <summary>
+    /// Returns true when all files in <paramref name="filePaths"/> share the same audio
+    /// codec, sample-rate and channel count. Files without an audio stream are ignored.
+    /// </summary>
+    public static async Task<bool> AudioStreamsCompatibleAsync(
+        IEnumerable<string> filePaths,
+        CancellationToken cancellationToken = default)
+    {
+        AudioStreamInfo? reference = null;
+        foreach (var path in filePaths)
+        {
+            var info = await GetAudioInfoAsync(path, cancellationToken);
+            if (info == null) continue;          // no audio – skip
+            if (reference == null) { reference = info; continue; }
+            if (info != reference) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Gets the duration of a media file in seconds using FFprobe.
     /// </summary>
     public static async Task<double> GetVideoDurationAsync(
@@ -222,3 +277,8 @@ public static class FFmpegHelper
         return false;
     }
 }
+
+/// <summary>
+/// Audio stream parameters used to detect cross-segment incompatibilities.
+/// </summary>
+public record AudioStreamInfo(string CodecName, string SampleRate, string Channels);
