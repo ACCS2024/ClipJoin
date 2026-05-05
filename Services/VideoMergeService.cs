@@ -643,12 +643,101 @@ public class VideoMergeService
 
             if (proc.ExitCode != 0)
             {
-                sessionLog.AppendLine($"  结果: 失败 (退出代码: {proc.ExitCode})");
-                throw new InvalidOperationException(
-                    $"FFmpeg 合并失败 (退出代码: {proc.ExitCode})，请确认视频文件格式一致");
-            }
+                sessionLog.AppendLine($"  结果: 流复制失败 (退出代码: {proc.ExitCode})，尝试重新编码音频...");
 
-            sessionLog.AppendLine($"  结果: 成功");
+                // Clean up failed output before retry
+                try { if (File.Exists(outputFile)) File.Delete(outputFile); } catch { }
+
+                // Retry with audio re-encoding to handle incompatible audio streams
+                // (e.g. mismatched sample rate / channel layout across segments)
+                var fallbackArgs = $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c:v copy -c:a aac -b:a 192k -movflags +faststart -y \"{outputFile}\"";
+                sessionLog.AppendLine($"  降级命令: {ffmpegPath} {fallbackArgs}");
+
+                progress.Report(new MergeProgress
+                {
+                    StatusMessage = $"正在合并: {group.Name}",
+                    CurrentTask = "音频不兼容，正在重新编码音频...",
+                    CompletedFolders = groupIndex,
+                    TotalFolders = totalGroups,
+                    FolderPercent = 0,
+                    TotalPercent = (double)groupIndex / totalGroups * 100,
+                    Elapsed = stopwatch.Elapsed,
+                    EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex, totalGroups),
+                    LogMessage = $"[{DateTime.Now:HH:mm:ss}] 音频流不兼容，降级为重编码音频模式"
+                });
+
+                var fallbackPsi = new ProcessStartInfo
+                {
+                    FileName = ffmpegPath,
+                    Arguments = fallbackArgs,
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = true
+                };
+
+                using var fallbackProc = Process.Start(fallbackPsi)
+                    ?? throw new InvalidOperationException("无法启动 FFmpeg 进程（降级模式）");
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var reader = fallbackProc.StandardError;
+                        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+                        {
+                            var timeIdx = line.IndexOf("time=", StringComparison.Ordinal);
+                            if (timeIdx >= 0 && totalDuration > 0)
+                            {
+                                var timeStr = line[(timeIdx + 5)..].Split(' ')[0];
+                                if (TryParseFFmpegTime(timeStr, out var currentTime))
+                                {
+                                    var folderPercent = Math.Min(100, currentTime / totalDuration * 100);
+                                    var totalPercent = (groupIndex + folderPercent / 100.0) / totalGroups * 100;
+                                    progress.Report(new MergeProgress
+                                    {
+                                        StatusMessage = $"正在合并: {group.Name}（重编码音频）",
+                                        CurrentTask = $"合并进度: {FormatTimeSpan(TimeSpan.FromSeconds(currentTime))} / {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}",
+                                        CompletedFolders = groupIndex,
+                                        TotalFolders = totalGroups,
+                                        FolderPercent = folderPercent,
+                                        TotalPercent = totalPercent,
+                                        Elapsed = stopwatch.Elapsed,
+                                        EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + folderPercent / 100.0, totalGroups)
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException) { }
+                    catch { }
+                }, CancellationToken.None);
+
+                try
+                {
+                    await fallbackProc.WaitForExitAsync(cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    try { if (!fallbackProc.HasExited) fallbackProc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                    try { await fallbackProc.WaitForExitAsync(CancellationToken.None); } catch (InvalidOperationException) { }
+                    try { if (File.Exists(outputFile)) File.Delete(outputFile); } catch { }
+                    throw;
+                }
+
+                if (fallbackProc.ExitCode != 0)
+                {
+                    sessionLog.AppendLine($"  结果: 失败 (降级模式退出代码: {fallbackProc.ExitCode})");
+                    throw new InvalidOperationException(
+                        $"FFmpeg 合并失败 (退出代码: {fallbackProc.ExitCode})，请确认视频文件格式一致");
+                }
+
+                sessionLog.AppendLine($"  结果: 成功（已重新编码音频以兼容不同集的音频格式）");
+            }
+            else
+            {
+                sessionLog.AppendLine($"  结果: 成功");
+            }
         }
         finally
         {
