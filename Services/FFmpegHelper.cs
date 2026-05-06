@@ -26,6 +26,24 @@ public static class FFmpegHelper
     private const string DownloadUrl =
         "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
 
+    // FFmpeg 4.4 build – does not call SetThreadDescription, compatible with
+    // Windows Server 2012 / Windows 8 and any system with OS build < 14393.
+    private const string LegacyDownloadUrl =
+        "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-4.4.1-essentials_build.zip";
+
+    /// <summary>
+    /// Returns true when the current OS is too old to support SetThreadDescription
+    /// (requires Windows 10 build 14393 / Server 2016 with update).
+    /// Modern FFmpeg builds call this API on startup and crash on older systems.
+    /// </summary>
+    public static bool NeedsLegacyBuild()
+    {
+        var ver = Environment.OSVersion.Version;
+        // Major < 10  →  Win 7 / 8 / 8.1 / Server 2012
+        // Major == 10, Build < 14393  →  Win 10 TH1/TH2 (rare), Server 2016 RTM without update
+        return ver.Major < 10 || (ver.Major == 10 && ver.Build < 14393);
+    }
+
     /// <summary>
     /// Finds the FFmpeg executable. Checks local app directory first, then system PATH.
     /// Returns the full path or the command name if found in PATH; null otherwise.
@@ -62,6 +80,7 @@ public static class FFmpegHelper
 
     /// <summary>
     /// Downloads and installs FFmpeg to the local app data directory.
+    /// Automatically selects a legacy build for Windows Server 2012 / Windows &lt; 10 build 14393.
     /// </summary>
     public static async Task DownloadAndInstallAsync(
         IProgress<(string message, double percent)>? progress = null,
@@ -71,14 +90,19 @@ public static class FFmpegHelper
 
         var zipPath = Path.Combine(AppDataDir, "ffmpeg-download.zip");
 
+        var useLegacy = NeedsLegacyBuild();
+        var url = useLegacy ? LegacyDownloadUrl : DownloadUrl;
+
         try
         {
-            progress?.Report(("正在下载 FFmpeg...", 0));
+            progress?.Report((useLegacy
+                ? "检测到旧版系统，正在下载兼容版 FFmpeg 4.4..."
+                : "正在下载 FFmpeg...", 0));
 
             using var httpClient = new HttpClient();
             httpClient.Timeout = TimeSpan.FromMinutes(30);
 
-            using var response = await httpClient.GetAsync(DownloadUrl,
+            using var response = await httpClient.GetAsync(url,
                 HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
 
@@ -123,20 +147,28 @@ public static class FFmpegHelper
             var binDir = Directory.GetDirectories(extractDir, "bin", SearchOption.AllDirectories)
                 .FirstOrDefault();
 
+            string? ffmpegSrc;
+            string? ffprobeSrc;
+
             if (binDir != null)
             {
-                var ffmpegSrc = Path.Combine(binDir, "ffmpeg.exe");
-                var ffprobeSrc = Path.Combine(binDir, "ffprobe.exe");
-
-                if (File.Exists(ffmpegSrc))
-                    File.Copy(ffmpegSrc, FFmpegExePath, true);
-                if (File.Exists(ffprobeSrc))
-                    File.Copy(ffprobeSrc, FFprobeExePath, true);
+                // BtbN layout: <root>/<name>/bin/ffmpeg.exe
+                ffmpegSrc  = Path.Combine(binDir, "ffmpeg.exe");
+                ffprobeSrc = Path.Combine(binDir, "ffprobe.exe");
             }
             else
             {
-                throw new InvalidOperationException("解压后未找到 FFmpeg 可执行文件");
+                // gyan.dev layout: <root>/<name>/ffmpeg.exe  (no bin sub-dir)
+                ffmpegSrc = Directory.GetFiles(extractDir, "ffmpeg.exe", SearchOption.AllDirectories)
+                    .FirstOrDefault();
+                ffprobeSrc = Directory.GetFiles(extractDir, "ffprobe.exe", SearchOption.AllDirectories)
+                    .FirstOrDefault();
             }
+
+            if (ffmpegSrc != null && File.Exists(ffmpegSrc))
+                File.Copy(ffmpegSrc, FFmpegExePath, true);
+            if (ffprobeSrc != null && File.Exists(ffprobeSrc))
+                File.Copy(ffprobeSrc, FFprobeExePath, true);
 
             // Validate both executables were installed
             if (!File.Exists(FFmpegExePath) || !File.Exists(FFprobeExePath))

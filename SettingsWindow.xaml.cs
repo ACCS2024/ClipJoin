@@ -25,9 +25,17 @@ namespace ClipJoin
         private void UpdateFFmpegPathLabel()
         {
             var path = FFmpegHelper.FindFFmpeg();
-            FFmpegPathText.Text = path != null
-                ? $"当前路径：{path}"
-                : "未检测到 FFmpeg，请重新部署";
+            if (path != null)
+            {
+                var suffix = FFmpegHelper.NeedsLegacyBuild() ? "（兼容模式 · 旧版系统）" : "";
+                FFmpegPathText.Text = $"当前路径：{path}{suffix}";
+            }
+            else
+            {
+                FFmpegPathText.Text = FFmpegHelper.NeedsLegacyBuild()
+                    ? "未检测到 FFmpeg，当前系统需要兼容版，请重新部署"
+                    : "未检测到 FFmpeg，请重新部署";
+            }
         }
 
         private void LoadSettings()
