@@ -1,7 +1,9 @@
 using System;
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using ClipJoin.Services;
@@ -11,11 +13,21 @@ namespace ClipJoin
     public partial class SettingsWindow : Window
     {
         private bool _keyVisible;
+        private CancellationTokenSource? _redeployCts;
 
         public SettingsWindow()
         {
             InitializeComponent();
             LoadSettings();
+            UpdateFFmpegPathLabel();
+        }
+
+        private void UpdateFFmpegPathLabel()
+        {
+            var path = FFmpegHelper.FindFFmpeg();
+            FFmpegPathText.Text = path != null
+                ? $"当前路径：{path}"
+                : "未检测到 FFmpeg，请重新部署";
         }
 
         private void LoadSettings()
@@ -166,8 +178,72 @@ namespace ClipJoin
             }
         }
 
+        private async void RedeployFFmpeg_Click(object sender, RoutedEventArgs e)
+        {
+            var result = MessageBox.Show(
+                "将删除本地 FFmpeg 并重新下载安装，过程中无法进行合并操作。\n\n确定继续？",
+                "重新部署 FFmpeg",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.OK) return;
+
+            RedeployFFmpegBtn.IsEnabled = false;
+            RedeployProgress.Visibility = Visibility.Visible;
+            RedeployStatusText.Visibility = Visibility.Visible;
+            RedeployProgress.Value = 0;
+            RedeployStatusText.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xD4, 0x6B, 0x08));
+
+            _redeployCts = new CancellationTokenSource();
+
+            try
+            {
+                // Delete existing ffmpeg directory
+                var ffmpegDir = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ClipJoin", "ffmpeg");
+
+                if (Directory.Exists(ffmpegDir))
+                {
+                    RedeployStatusText.Text = "正在删除旧版本...";
+                    await System.Threading.Tasks.Task.Run(() => Directory.Delete(ffmpegDir, true));
+                }
+
+                var progress = new Progress<(string message, double percent)>(report =>
+                {
+                    RedeployStatusText.Text = report.message;
+                    RedeployProgress.Value = report.percent;
+                });
+
+                await FFmpegHelper.DownloadAndInstallAsync(progress, _redeployCts.Token);
+
+                RedeployProgress.Value = 100;
+                RedeployStatusText.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0x52, 0xC4, 0x1A));
+                RedeployStatusText.Text = "✓ FFmpeg 部署成功！";
+                UpdateFFmpegPathLabel();
+            }
+            catch (OperationCanceledException)
+            {
+                RedeployStatusText.Text = "已取消";
+            }
+            catch (Exception ex)
+            {
+                RedeployStatusText.Foreground = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0xFF, 0x4D, 0x4F));
+                RedeployStatusText.Text = $"部署失败：{ex.Message}";
+            }
+            finally
+            {
+                RedeployFFmpegBtn.IsEnabled = true;
+                _redeployCts = null;
+            }
+        }
+
         private void Cancel_Click(object sender, RoutedEventArgs e)
         {
+            _redeployCts?.Cancel();
             DialogResult = false;
             Close();
         }

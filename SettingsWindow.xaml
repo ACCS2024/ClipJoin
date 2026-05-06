@@ -84,6 +84,42 @@
                     </StackPanel>
                 </Border>
 
+                <!-- 分组标签：FFmpeg 环境 -->
+                <TextBlock Text="FFmpeg 环境" FontSize="11" FontWeight="SemiBold"
+                           Foreground="#8C8C8C" Margin="2,20,0,8"/>
+
+                <!-- FFmpeg 环境卡片 -->
+                <Border Background="White" BorderBrush="#E8E8E8" BorderThickness="1"
+                        CornerRadius="8" Padding="16,14" Margin="0,0,0,20">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="重新部署 FFmpeg" FontSize="13" FontWeight="SemiBold" Foreground="#333"/>
+                                <TextBlock x:Name="FFmpegPathText" FontSize="11" Foreground="#8C8C8C"
+                                           Margin="0,3,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <Button x:Name="RedeployFFmpegBtn" Grid.Column="1"
+                                    Content="重新部署" Padding="14,7" FontSize="12"
+                                    Background="White" Foreground="#D46B08"
+                                    BorderBrush="#FFA940" BorderThickness="1"
+                                    Cursor="Hand" VerticalAlignment="Center"
+                                    Click="RedeployFFmpeg_Click"/>
+                        </Grid>
+                        <TextBlock Text="如果 FFmpeg 与当前系统不兼容（如出现无法找到入口点的错误），可点击此按钮删除旧版本并重新下载安装。"
+                                   FontSize="11" Foreground="#8C8C8C" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                        <!-- 重新部署进度条 -->
+                        <ProgressBar x:Name="RedeployProgress" Height="4" Margin="0,10,0,0"
+                                     Minimum="0" Maximum="100" Visibility="Collapsed"
+                                     Foreground="#FFA940" Background="#FFF1E0"/>
+                        <TextBlock x:Name="RedeployStatusText" FontSize="11" Margin="0,4,0,0"
+                                   Foreground="#D46B08" Visibility="Collapsed" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
                 <!-- 分组标签：输出文件处理 -->
                 <TextBlock Text="输出文件处理" FontSize="11" FontWeight="SemiBold"
                            Foreground="#8C8C8C" Margin="2,0,0,8"/>
