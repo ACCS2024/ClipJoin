@@ -548,16 +548,22 @@ public class VideoMergeService
             // Pre-check audio stream compatibility across all segments.
             // If any segment differs in codec/sample-rate/channels, force audio re-encoding
             // so that the output file is not silently broken (exit code 0 but corrupt audio).
+            // -ar is mandatory when re-encoding: without it FFmpeg uses the first segment's
+            // sample rate as the AAC encoder clock, causing audio/video desync when later
+            // segments have a different sample rate (e.g. 44100 Hz then 48000 Hz).
             var audioCompatible = await FFmpegHelper.AudioStreamsCompatibleAsync(group.VideoFiles, cancellationToken);
+            var targetSampleRate = audioCompatible
+                ? 0
+                : await FFmpegHelper.GetMaxSampleRateAsync(group.VideoFiles, cancellationToken);
             var ffmpegArgs = audioCompatible
                 ? $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c copy -movflags +faststart -y \"{outputFile}\""
-                : $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c:v copy -c:a aac -b:a 192k -movflags +faststart -y \"{outputFile}\"";
+                : $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c:v copy -c:a aac -b:a 192k -ar {targetSampleRate} -movflags +faststart -y \"{outputFile}\"";
 
             // Log the full FFmpeg command
             sessionLog.AppendLine($"  输出文件: {outputFile}");
             sessionLog.AppendLine($"  总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}");
             if (!audioCompatible)
-                sessionLog.AppendLine($"  注意: 检测到各分集音频参数不一致，已启用音频重编码模式");
+                sessionLog.AppendLine($"  注意: 检测到各分集音频参数不一致，已启用音频重编码模式 (统一采样率: {targetSampleRate} Hz)");
             sessionLog.AppendLine($"  FFmpeg 命令: {ffmpegPath} {ffmpegArgs}");
 
             progress.Report(new MergeProgress
@@ -662,7 +668,7 @@ public class VideoMergeService
 
                 // Retry with audio re-encoding to handle incompatible audio streams
                 // (e.g. mismatched sample rate / channel layout across segments)
-                var fallbackArgs = $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c:v copy -c:a aac -b:a 192k -movflags +faststart -y \"{outputFile}\"";
+                var fallbackArgs = $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c:v copy -c:a aac -b:a 192k -ar {targetSampleRate} -movflags +faststart -y \"{outputFile}\"";
                 sessionLog.AppendLine($"  降级命令: {ffmpegPath} {fallbackArgs}");
 
                 progress.Report(new MergeProgress

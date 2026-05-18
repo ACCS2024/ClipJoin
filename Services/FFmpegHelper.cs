@@ -23,11 +23,12 @@ public static class FFmpegHelper
     public static string FFmpegExePath => Path.Combine(FFmpegDir, "ffmpeg.exe");
     public static string FFprobeExePath => Path.Combine(FFmpegDir, "ffprobe.exe");
 
+    // Official build recommended by https://ffmpeg.org/download.html#build-windows (BtbN)
     private const string DownloadUrl =
         "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
 
-    // FFmpeg 4.4 build – does not call SetThreadDescription, compatible with
-    // Windows Server 2012 / Windows 8 and any system with OS build < 14393.
+    // Official build recommended by https://ffmpeg.org/download.html#build-windows (gyan.dev)
+    // FFmpeg 4.4 – compatible with Windows < 10 build 14393 (no SetThreadDescription call)
     private const string LegacyDownloadUrl =
         "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-4.4.1-essentials_build.zip";
 
@@ -180,6 +181,9 @@ public static class FFmpegHelper
             if (Directory.Exists(extractDir))
                 Directory.Delete(extractDir, true);
 
+            // Add FFmpegDir to the user's PATH environment variable
+            AddToUserPath(FFmpegDir);
+
             progress?.Report(("FFmpeg 安装完成！", 100));
         }
         finally
@@ -248,6 +252,26 @@ public static class FFmpegHelper
     }
 
     /// <summary>
+    /// Returns the highest audio sample rate found across all files.
+    /// Used to set a uniform <c>-ar</c> target when re-encoding mixed-rate audio.
+    /// Falls back to 48000 when no audio streams are found.
+    /// </summary>
+    public static async Task<int> GetMaxSampleRateAsync(
+        IEnumerable<string> filePaths,
+        CancellationToken cancellationToken = default)
+    {
+        int max = 44100;
+        foreach (var path in filePaths)
+        {
+            var info = await GetAudioInfoAsync(path, cancellationToken);
+            if (info == null) continue;
+            if (int.TryParse(info.SampleRate, out var rate) && rate > max)
+                max = rate;
+        }
+        return max;
+    }
+
+    /// <summary>
     /// Gets the duration of a media file in seconds using FFprobe.
     /// </summary>
     public static async Task<double> GetVideoDurationAsync(
@@ -279,6 +303,34 @@ public static class FFmpegHelper
             return duration;
 
         return 0;
+    }
+
+    /// <summary>
+    /// Adds <paramref name="directory"/> to the current user's PATH environment variable
+    /// (HKCU) if it is not already present. This does not require administrator privileges.
+    /// </summary>
+    private static void AddToUserPath(string directory)
+    {
+        const string key = "PATH";
+        var current = Environment.GetEnvironmentVariable(key, EnvironmentVariableTarget.User) ?? string.Empty;
+
+        // Normalise for comparison
+        var entries = current.Split(';', StringSplitOptions.RemoveEmptyEntries);
+        if (entries.Any(e => string.Equals(e.Trim(), directory, StringComparison.OrdinalIgnoreCase)))
+            return; // already present
+
+        var updated = current.TrimEnd(';') + ";" + directory;
+        Environment.SetEnvironmentVariable(key, updated, EnvironmentVariableTarget.User);
+
+        // Also update the current process so ffmpeg is usable immediately
+        var processPath = Environment.GetEnvironmentVariable(key, EnvironmentVariableTarget.Process) ?? string.Empty;
+        if (!processPath.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Any(e => string.Equals(e.Trim(), directory, StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.SetEnvironmentVariable(key,
+                processPath.TrimEnd(';') + ";" + directory,
+                EnvironmentVariableTarget.Process);
+        }
     }
 
     private static bool IsInPath(string command)
