@@ -521,250 +521,207 @@ public class VideoMergeService
         StringBuilder sessionLog,
         CancellationToken cancellationToken)
     {
-        var listFile = Path.Combine(Path.GetTempPath(), $"clipjoin_{Guid.NewGuid():N}.txt");
+        // Temp directory for all intermediate .ts files for this group
+        var tempDir = Path.Combine(Path.GetTempPath(), $"clipjoin_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        var tsListFile = Path.Combine(tempDir, "concat.txt");
+        var mergedTs = Path.Combine(tempDir, "merged.ts");
 
         try
         {
-            // Write FFmpeg concat file list
-            var lines = group.VideoFiles.Select(f => $"file '{f.Replace("'", "'\\''")}'").ToList();
-            await File.WriteAllLinesAsync(listFile, lines, cancellationToken);
-
-            // Log concat list content to session log
-            sessionLog.AppendLine($"  操作: FFmpeg concat 合并");
-            sessionLog.AppendLine($"  concat 列表文件: {listFile}");
-            sessionLog.AppendLine($"  concat 列表内容:");
-            foreach (var line in lines)
-            {
-                sessionLog.AppendLine($"    {line}");
-            }
-
             // Compute total duration for progress tracking
             double totalDuration = 0;
             foreach (var video in group.VideoFiles)
-            {
                 totalDuration += await FFmpegHelper.GetVideoDurationAsync(video, cancellationToken);
-            }
 
-            // Pre-check audio stream compatibility across all segments.
-            // If any segment differs in codec/sample-rate/channels, force audio re-encoding
-            // so that the output file is not silently broken (exit code 0 but corrupt audio).
-            // -ar is mandatory when re-encoding: without it FFmpeg uses the first segment's
-            // sample rate as the AAC encoder clock, causing audio/video desync when later
-            // segments have a different sample rate (e.g. 44100 Hz then 48000 Hz).
-            var audioCompatible = await FFmpegHelper.AudioStreamsCompatibleAsync(group.VideoFiles, cancellationToken);
-            var targetSampleRate = audioCompatible
-                ? 0
-                : await FFmpegHelper.GetMaxSampleRateAsync(group.VideoFiles, cancellationToken);
-            var ffmpegArgs = audioCompatible
-                ? $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c copy -movflags +faststart -y \"{outputFile}\""
-                : $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c:v copy -c:a aac -b:a 192k -ar {targetSampleRate} -movflags +faststart -y \"{outputFile}\"";
-
-            // Log the full FFmpeg command
+            sessionLog.AppendLine($"  操作: MP4→TS→MP4 无损合并（方案A，消除 edit list 累积）");
             sessionLog.AppendLine($"  输出文件: {outputFile}");
             sessionLog.AppendLine($"  总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}");
-            if (!audioCompatible)
-                sessionLog.AppendLine($"  注意: 检测到各分集音频参数不一致，已启用音频重编码模式 (统一采样率: {targetSampleRate} Hz)");
-            sessionLog.AppendLine($"  FFmpeg 命令: {ffmpegPath} {ffmpegArgs}");
+            sessionLog.AppendLine($"  分集数量: {group.VideoFiles.Count}");
 
             progress.Report(new MergeProgress
             {
                 StatusMessage = $"正在合并: {group.Name}",
-                CurrentTask = audioCompatible
-                    ? $"总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}，正在拼接..."
-                    : $"总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}，音频不兼容，正在重编码音频...",
+                CurrentTask = $"总时长: {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}，正在转换为 TS 格式 (0/{group.VideoFiles.Count})...",
                 CompletedFolders = groupIndex,
                 TotalFolders = totalGroups,
                 FolderPercent = 0,
                 TotalPercent = (double)groupIndex / totalGroups * 100,
                 Elapsed = stopwatch.Elapsed,
                 EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex, totalGroups),
-                LogMessage = audioCompatible
-                    ? $"[{DateTime.Now:HH:mm:ss}] 合并 {group.VideoFiles.Count} 个文件，总时长 {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}"
-                    : $"[{DateTime.Now:HH:mm:ss}] 合并 {group.VideoFiles.Count} 个文件，总时长 {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}（音频重编码）"
+                LogMessage = $"[{DateTime.Now:HH:mm:ss}] 合并 {group.VideoFiles.Count} 个文件，总时长 {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}"
             });
 
-            // Run FFmpeg with concat demuxer (no re-encoding)
-            var psi = new ProcessStartInfo
+            // ── Step 1: remux each MP4 → .ts (strips edit list, resets timestamps) ──
+            var tsFiles = new List<string>();
+            for (int i = 0; i < group.VideoFiles.Count; i++)
             {
-                FileName = ffmpegPath,
-                Arguments = ffmpegArgs,
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = false,
-                RedirectStandardError = true
-            };
+                cancellationToken.ThrowIfCancellationRequested();
 
-            using var proc = Process.Start(psi)
-                ?? throw new InvalidOperationException("无法启动 FFmpeg 进程");
+                var src = group.VideoFiles[i];
+                var tsFile = Path.Combine(tempDir, $"seg_{i:D4}.ts");
+                tsFiles.Add(tsFile);
 
-            // Parse stderr for progress updates
+                var toTsArgs = $"-hide_banner -nostdin -i \"{src}\" -c copy -bsf:v h264_mp4toannexb -f mpegts -y \"{tsFile}\"";
+                sessionLog.AppendLine($"  TS[{i + 1}/{group.VideoFiles.Count}]: {ffmpegPath} {toTsArgs}");
+
+                await RunFFmpegAsync(ffmpegPath, toTsArgs, cancellationToken,
+                    onProgress: pct =>
+                    {
+                        // Phase 1 occupies 0-50% of folder progress
+                        var folderPct = (i + pct / 100.0) / group.VideoFiles.Count * 50.0;
+                        var totalPct = (groupIndex + folderPct / 100.0) / totalGroups * 100;
+                        progress.Report(new MergeProgress
+                        {
+                            StatusMessage = $"正在合并: {group.Name}",
+                            CurrentTask = $"转换 TS ({i + 1}/{group.VideoFiles.Count}): {Path.GetFileName(src)}",
+                            CompletedFolders = groupIndex,
+                            TotalFolders = totalGroups,
+                            FolderPercent = folderPct,
+                            TotalPercent = totalPct,
+                            Elapsed = stopwatch.Elapsed,
+                            EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + folderPct / 100.0, totalGroups)
+                        });
+                    },
+                    errorContext: $"转换 TS 失败: {Path.GetFileName(src)}");
+            }
+
+            // ── Step 2: concat all .ts into a single merged.ts ──
+            var tsLines = tsFiles.Select(f => $"file '{f.Replace("'", "'\\''")}'").ToList();
+            await File.WriteAllLinesAsync(tsListFile, tsLines, cancellationToken);
+
+            sessionLog.AppendLine($"  合并 TS 列表: {tsListFile}");
+
+            var concatTsArgs = $"-hide_banner -nostdin -f concat -safe 0 -i \"{tsListFile}\" -c copy -y \"{mergedTs}\"";
+            sessionLog.AppendLine($"  合并命令: {ffmpegPath} {concatTsArgs}");
+
+            progress.Report(new MergeProgress
+            {
+                StatusMessage = $"正在合并: {group.Name}",
+                CurrentTask = "正在拼接所有片段...",
+                CompletedFolders = groupIndex,
+                TotalFolders = totalGroups,
+                FolderPercent = 50,
+                TotalPercent = (groupIndex + 0.5) / totalGroups * 100,
+                Elapsed = stopwatch.Elapsed,
+                EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + 0.5, totalGroups),
+                LogMessage = $"[{DateTime.Now:HH:mm:ss}] 正在拼接 {group.VideoFiles.Count} 个 TS 片段..."
+            });
+
+            await RunFFmpegAsync(ffmpegPath, concatTsArgs, cancellationToken,
+                onProgress: null,
+                errorContext: "合并 TS 片段失败");
+
+            // ── Step 3: remux merged.ts → final MP4 (restore container, add faststart) ──
+            var toMp4Args = $"-hide_banner -nostdin -i \"{mergedTs}\" -c copy -movflags +faststart -y \"{outputFile}\"";
+            sessionLog.AppendLine($"  输出命令: {ffmpegPath} {toMp4Args}");
+
+            progress.Report(new MergeProgress
+            {
+                StatusMessage = $"正在合并: {group.Name}",
+                CurrentTask = "正在生成最终 MP4...",
+                CompletedFolders = groupIndex,
+                TotalFolders = totalGroups,
+                FolderPercent = 75,
+                TotalPercent = (groupIndex + 0.75) / totalGroups * 100,
+                Elapsed = stopwatch.Elapsed,
+                EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + 0.75, totalGroups)
+            });
+
+            await RunFFmpegAsync(ffmpegPath, toMp4Args, cancellationToken,
+                onProgress: pct =>
+                {
+                    var folderPct = 75.0 + pct / 100.0 * 25.0;
+                    var totalPct = (groupIndex + folderPct / 100.0) / totalGroups * 100;
+                    progress.Report(new MergeProgress
+                    {
+                        StatusMessage = $"正在合并: {group.Name}",
+                        CurrentTask = $"生成 MP4: {pct:F0}%",
+                        CompletedFolders = groupIndex,
+                        TotalFolders = totalGroups,
+                        FolderPercent = folderPct,
+                        TotalPercent = totalPct,
+                        Elapsed = stopwatch.Elapsed,
+                        EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + folderPct / 100.0, totalGroups)
+                    });
+                },
+                errorContext: "生成最终 MP4 失败");
+
+            sessionLog.AppendLine($"  结果: 成功");
+        }
+        finally
+        {
+            // Clean up all temporary files
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); }
+            catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>
+    /// Runs an FFmpeg command, tracks progress via stderr, and throws on non-zero exit.
+    /// Handles cancellation by killing the process and cleaning up partial output.
+    /// </summary>
+    private static async Task RunFFmpegAsync(
+        string ffmpegPath,
+        string arguments,
+        CancellationToken cancellationToken,
+        Action<double>? onProgress,
+        string errorContext)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpegPath,
+            Arguments = arguments,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = false,
+            RedirectStandardError = true
+        };
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException($"无法启动 FFmpeg 进程: {errorContext}");
+
+        if (onProgress != null)
+        {
             _ = Task.Run(async () =>
             {
                 try
                 {
                     using var reader = proc.StandardError;
-                    while (await reader.ReadLineAsync(cancellationToken) is { } line)
+                    while (await reader.ReadLineAsync(CancellationToken.None) is { } line)
                     {
                         var timeIdx = line.IndexOf("time=", StringComparison.Ordinal);
-                        if (timeIdx >= 0 && totalDuration > 0)
+                        if (timeIdx >= 0)
                         {
                             var timeStr = line[(timeIdx + 5)..].Split(' ')[0];
                             if (TryParseFFmpegTime(timeStr, out var currentTime))
-                            {
-                                var folderPercent = Math.Min(100, currentTime / totalDuration * 100);
-                                var totalPercent = (groupIndex + folderPercent / 100.0) / totalGroups * 100;
-
-                                progress.Report(new MergeProgress
-                                {
-                                    StatusMessage = $"正在合并: {group.Name}",
-                                    CurrentTask = $"合并进度: {FormatTimeSpan(TimeSpan.FromSeconds(currentTime))} / {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}",
-                                    CompletedFolders = groupIndex,
-                                    TotalFolders = totalGroups,
-                                    FolderPercent = folderPercent,
-                                    TotalPercent = totalPercent,
-                                    Elapsed = stopwatch.Elapsed,
-                                    EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + folderPercent / 100.0, totalGroups)
-                                });
-                            }
+                                onProgress(Math.Min(100, currentTime));
                         }
                     }
                 }
-                catch (OperationCanceledException) { /* expected on cancel */ }
-                catch { /* ignore stderr parsing errors to avoid unobserved task exceptions */ }
+                catch { /* ignore */ }
             }, CancellationToken.None);
-
-            try
-            {
-                await proc.WaitForExitAsync(cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                try
-                {
-                    if (!proc.HasExited)
-                        proc.Kill(entireProcessTree: true);
-                }
-                catch (InvalidOperationException) { }
-
-                try
-                {
-                    await proc.WaitForExitAsync(CancellationToken.None);
-                }
-                catch (InvalidOperationException) { }
-
-                // Delete the partial/corrupt output file left by the killed FFmpeg process
-                try { if (File.Exists(outputFile)) File.Delete(outputFile); }
-                catch { /* best-effort cleanup */ }
-
-                throw;
-            }
-
-            if (proc.ExitCode != 0)
-            {
-                sessionLog.AppendLine($"  结果: 流复制失败 (退出代码: {proc.ExitCode})，尝试重新编码音频...");
-
-                // Clean up failed output before retry
-                try { if (File.Exists(outputFile)) File.Delete(outputFile); } catch { }
-
-                // Retry with audio re-encoding to handle incompatible audio streams
-                // (e.g. mismatched sample rate / channel layout across segments)
-                var fallbackArgs = $"-hide_banner -nostdin -f concat -safe 0 -i \"{listFile}\" -c:v copy -c:a aac -b:a 192k -ar {targetSampleRate} -movflags +faststart -y \"{outputFile}\"";
-                sessionLog.AppendLine($"  降级命令: {ffmpegPath} {fallbackArgs}");
-
-                progress.Report(new MergeProgress
-                {
-                    StatusMessage = $"正在合并: {group.Name}",
-                    CurrentTask = "音频不兼容，正在重新编码音频...",
-                    CompletedFolders = groupIndex,
-                    TotalFolders = totalGroups,
-                    FolderPercent = 0,
-                    TotalPercent = (double)groupIndex / totalGroups * 100,
-                    Elapsed = stopwatch.Elapsed,
-                    EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex, totalGroups),
-                    LogMessage = $"[{DateTime.Now:HH:mm:ss}] 音频流不兼容，降级为重编码音频模式"
-                });
-
-                var fallbackPsi = new ProcessStartInfo
-                {
-                    FileName = ffmpegPath,
-                    Arguments = fallbackArgs,
-                    CreateNoWindow = true,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = false,
-                    RedirectStandardError = true
-                };
-
-                using var fallbackProc = Process.Start(fallbackPsi)
-                    ?? throw new InvalidOperationException("无法启动 FFmpeg 进程（降级模式）");
-
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        using var reader = fallbackProc.StandardError;
-                        while (await reader.ReadLineAsync(cancellationToken) is { } line)
-                        {
-                            var timeIdx = line.IndexOf("time=", StringComparison.Ordinal);
-                            if (timeIdx >= 0 && totalDuration > 0)
-                            {
-                                var timeStr = line[(timeIdx + 5)..].Split(' ')[0];
-                                if (TryParseFFmpegTime(timeStr, out var currentTime))
-                                {
-                                    var folderPercent = Math.Min(100, currentTime / totalDuration * 100);
-                                    var totalPercent = (groupIndex + folderPercent / 100.0) / totalGroups * 100;
-                                    progress.Report(new MergeProgress
-                                    {
-                                        StatusMessage = $"正在合并: {group.Name}（重编码音频）",
-                                        CurrentTask = $"合并进度: {FormatTimeSpan(TimeSpan.FromSeconds(currentTime))} / {FormatTimeSpan(TimeSpan.FromSeconds(totalDuration))}",
-                                        CompletedFolders = groupIndex,
-                                        TotalFolders = totalGroups,
-                                        FolderPercent = folderPercent,
-                                        TotalPercent = totalPercent,
-                                        Elapsed = stopwatch.Elapsed,
-                                        EstimatedRemaining = EstimateRemaining(stopwatch.Elapsed, groupIndex + folderPercent / 100.0, totalGroups)
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    catch (OperationCanceledException) { }
-                    catch { }
-                }, CancellationToken.None);
-
-                try
-                {
-                    await fallbackProc.WaitForExitAsync(cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    try { if (!fallbackProc.HasExited) fallbackProc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-                    try { await fallbackProc.WaitForExitAsync(CancellationToken.None); } catch (InvalidOperationException) { }
-                    try { if (File.Exists(outputFile)) File.Delete(outputFile); } catch { }
-                    throw;
-                }
-
-                if (fallbackProc.ExitCode != 0)
-                {
-                    sessionLog.AppendLine($"  结果: 失败 (降级模式退出代码: {fallbackProc.ExitCode})");
-                    throw new InvalidOperationException(
-                        $"FFmpeg 合并失败 (退出代码: {fallbackProc.ExitCode})，请确认视频文件格式一致");
-                }
-
-                sessionLog.AppendLine($"  结果: 成功（已重新编码音频以兼容不同集的音频格式）");
-            }
-            else
-            {
-                sessionLog.AppendLine($"  结果: 成功");
-            }
         }
-        finally
+        else
         {
-            if (File.Exists(listFile))
-            {
-                try { File.Delete(listFile); }
-                catch { /* ignored */ }
-            }
+            // Still need to drain stderr to avoid blocking
+            _ = proc.StandardError.ReadToEndAsync(CancellationToken.None);
         }
+
+        try
+        {
+            await proc.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            try { await proc.WaitForExitAsync(CancellationToken.None); } catch (InvalidOperationException) { }
+            throw;
+        }
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException($"{errorContext} (FFmpeg 退出代码: {proc.ExitCode})");
     }
 
     /// <summary>
