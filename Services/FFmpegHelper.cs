@@ -197,6 +197,46 @@ public static class FFmpegHelper
     }
 
     /// <summary>
+    /// Gets the video codec name (e.g. "h264", "hevc", "av1") of the first video stream.
+    /// Returns null if the file has no video stream.
+    /// </summary>
+    public static async Task<string?> GetVideoCodecAsync(
+        string filePath,
+        CancellationToken cancellationToken = default)
+    {
+        var ffprobe = FindFFprobe() ?? FFprobeExePath;
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffprobe,
+            Arguments = $"-v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \"{filePath}\"",
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        using var proc = Process.Start(psi);
+        if (proc == null) return null;
+
+        var output = (await proc.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+        await proc.WaitForExitAsync(cancellationToken);
+
+        return string.IsNullOrEmpty(output) ? null : output.Split(',')[0].Trim();
+    }
+
+    /// <summary>
+    /// Returns the appropriate MP4-to-Annex-B bitstream filter name for the given video codec,
+    /// or null if the codec does not require one (e.g. VP9, AV1).
+    /// </summary>
+    public static string? GetMp4ToAnnexBFilter(string? codec) => codec?.ToLowerInvariant() switch
+    {
+        "h264" or "avc" => "h264_mp4toannexb",
+        "hevc" or "h265" => "hevc_mp4toannexb",
+        _ => null
+    };
+
+    /// <summary>
     /// Gets key audio stream parameters (sample_rate, channels, codec_name) via FFprobe.
     /// Returns null if the file has no audio stream.
     /// </summary>

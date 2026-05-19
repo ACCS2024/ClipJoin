@@ -554,6 +554,7 @@ public class VideoMergeService
             });
 
             // ── Step 1: remux each MP4 → .ts (strips edit list, resets timestamps) ──
+            // Each file may have a different video codec, so detect BSF per file.
             var tsFiles = new List<string>();
             for (int i = 0; i < group.VideoFiles.Count; i++)
             {
@@ -563,8 +564,12 @@ public class VideoMergeService
                 var tsFile = Path.Combine(tempDir, $"seg_{i:D4}.ts");
                 tsFiles.Add(tsFile);
 
-                var toTsArgs = $"-hide_banner -nostdin -i \"{src}\" -c copy -bsf:v h264_mp4toannexb -f mpegts -y \"{tsFile}\"";
-                sessionLog.AppendLine($"  TS[{i + 1}/{group.VideoFiles.Count}]: {ffmpegPath} {toTsArgs}");
+                var videoCodec = await FFmpegHelper.GetVideoCodecAsync(src, cancellationToken);
+                var bsf = FFmpegHelper.GetMp4ToAnnexBFilter(videoCodec);
+                var bsfArg = bsf != null ? $"-bsf:v {bsf} " : "";
+
+                var toTsArgs = $"-hide_banner -nostdin -i \"{src}\" -c copy {bsfArg}-f mpegts -y \"{tsFile}\"";
+                sessionLog.AppendLine($"  TS[{i + 1}/{group.VideoFiles.Count}] codec={videoCodec ?? "?"} bsf={bsf ?? "none"}: {ffmpegPath} {toTsArgs}");
 
                 await RunFFmpegAsync(ffmpegPath, toTsArgs, cancellationToken,
                     onProgress: pct =>
